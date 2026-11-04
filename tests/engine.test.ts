@@ -10,7 +10,7 @@ class FakeTodoist {
   seq = 0;
   nextId = 1;
   calls: Command[][] = [];
-  projects: { id: string; name: string; seq: number; inbox_project?: boolean; is_archived?: boolean }[] = [
+  projects: { id: string; name: string; seq: number; inbox_project?: boolean; is_archived?: boolean; is_deleted?: boolean }[] = [
     { id: "inbox", name: "Inbox", inbox_project: true, seq: 0 },
     { id: "P2", name: "Work", seq: 0 },
     { id: "PA", name: "Old", is_archived: true, seq: 0 },
@@ -66,6 +66,12 @@ class FakeTodoist {
       },
     };
   };
+
+  /** Like the real API (seen live): the project is reported deleted, its tasks just vanish. */
+  deleteProject(id: string) {
+    Object.assign(this.projects.find((p) => p.id === id)!, { is_deleted: true, seq: ++this.seq });
+    for (const [itemId, it] of this.items) if (it.project_id === id) this.items.delete(itemId);
+  }
 
   /** Simulate an edit in the Todoist app. */
   edit(id: string, patch: Partial<TodoistItem>) {
@@ -218,6 +224,20 @@ describe("SyncEngine", () => {
     await engine.pull();
     expect(state.tasks["T2"].orphaned).toBe(true);
     expect(vault.files.get("A.md")).toBe("- [ ] two %%td:T2%%");
+  });
+
+  it("orphans tasks whose project was deleted in Todoist", async () => {
+    await engine.pull();
+    vault.files.set("Note.md", "- [ ] in work #[Work]\n- [ ] moved out #[Work]\n- [ ] in inbox");
+    await engine.pushFile("Note.md");
+    await engine.pull();
+    todoist.edit("T2", { project_id: "inbox" }); // moved out before the project goes
+    todoist.deleteProject("P2");
+    await engine.pull();
+    expect(state.tasks["T1"].orphaned).toBe(true);
+    expect(state.tasks["T2"].orphaned).toBeFalsy();
+    expect(state.tasks["T3"].orphaned).toBeFalsy();
+    expect(vault.files.get("Note.md")).toBe("- [ ] in work %%td:T1%%\n- [ ] moved out %%td:T2%%\n- [ ] in inbox %%td:T3%%");
   });
 
   it("re-adopts a task moved to another note", async () => {

@@ -373,9 +373,12 @@ export class SyncEngine {
     });
 
     if (res.full_sync) this.state.projects = {};
+    const deletedProjects = new Set<string>();
     for (const p of res.projects ?? []) {
-      if (p.is_deleted) delete this.state.projects[p.id];
-      else {
+      if (p.is_deleted) {
+        delete this.state.projects[p.id];
+        deletedProjects.add(p.id);
+      } else {
         this.state.projects[p.id] = {
           name: p.name,
           color: p.color,
@@ -416,6 +419,17 @@ export class SyncEngine {
         labels: item.labels,
       };
       byPath.set(rec.path, [...(byPath.get(rec.path) ?? []), item]);
+    }
+
+    // Deleting a project deletes its tasks, but Todoist reports only the project, not each task.
+    // Checked after the items above, so a task moved out of the project first is left alone.
+    if (deletedProjects.size) {
+      for (const [id, meta] of Object.entries(this.state.remote)) {
+        const rec = this.state.tasks[id];
+        if (!rec || !deletedProjects.has(meta.projectId)) continue;
+        rec.orphaned = true;
+        delete this.state.remote[id];
+      }
     }
 
     for (const [path, pairs] of pendingResolutions) await this.resolvePending(path, pairs);
