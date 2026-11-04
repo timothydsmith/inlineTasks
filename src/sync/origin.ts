@@ -17,6 +17,26 @@
 export const QUIET_MS = 120_000;
 /** A file write within this long after a local edit is treated as Obsidian saving that edit. */
 export const LOCAL_WINDOW_MS = 10_000;
+/** An editor change this soon after a key press or tap in Obsidian counts as caused by it. */
+export const INPUT_WINDOW_MS = 1_500;
+
+/**
+ * Was this editor change made on this device?
+ *
+ * Focus alone isn't enough: a desktop window can sit focused on a note while you type on your
+ * phone, and Obsidian Sync then rewrites that focused editor. So a change counts as local only if
+ * CodeMirror marks it as user input (typing, paste, delete, undo, ...), or if it closely follows a
+ * real key press or tap while the editor has focus, which covers ticking a checkbox and commands.
+ */
+export function isLocalChange(
+  userEvents: (string | undefined)[],
+  lastInputAt: number,
+  editorHasFocus: boolean,
+  now: number,
+): boolean {
+  if (userEvents.some((ev) => !!ev && !ev.startsWith("select"))) return true;
+  return editorHasFocus && now - lastInputAt < INPUT_WINDOW_MS;
+}
 
 /**
  * True if this device should hold off pushing a note for now.

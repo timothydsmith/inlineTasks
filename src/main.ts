@@ -32,6 +32,8 @@ export default class InlineTasksPlugin extends Plugin {
   private backfillPrompted = false;
   /** When each note was last edited in this device's editor (see sync/origin.ts). */
   private lastLocalEdit = new Map<string, number>();
+  /** Last key press, click or tap in this window. */
+  private lastInputAt = 0;
 
   async onload(): Promise<void> {
     const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
@@ -60,7 +62,16 @@ export default class InlineTasksPlugin extends Plugin {
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion));
-    this.registerEditorExtension(localEditTracker((path) => this.lastLocalEdit.set(path, Date.now())));
+    this.registerEditorExtension(
+      localEditTracker(
+        (path) => this.lastLocalEdit.set(path, Date.now()),
+        () => this.lastInputAt,
+      ),
+    );
+    // Real user input anywhere in this window. Captured before Obsidian or the editor handle it.
+    for (const type of ["keydown", "pointerdown", "touchstart", "paste", "drop"] as const) {
+      this.registerDomEvent(document, type, () => (this.lastInputAt = Date.now()), { capture: true });
+    }
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state));
     this.registerProjectSuggest();
 
