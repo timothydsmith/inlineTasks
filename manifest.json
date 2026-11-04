@@ -1,0 +1,9 @@
+{
+  "id": "inline-tasks",
+  "name": "Inline Tasks for Todoist",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Mirror every checkbox in your notes to Todoist with two-way sync, shown inline as a chip.",
+  "author": "Timothy Smith",
+  "isDesktopOnly": false
+}
