@@ -1,0 +1,25 @@
+# Changelog
+
+All notable changes to Inline Tasks for Todoist are recorded here.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
+
+Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Changed, Fixed or Removed. When you release, rename **Unreleased** to the version and date, and start a fresh **Unreleased** section above it. The full steps are in the README under [Branches and releases](README.md#branches-and-releases).
+
+## [Unreleased]
+
+First release, planned as 0.1.0.
+
+### Added
+- Two-way sync between every open checkbox in the vault and Todoist, using the unified API v1 `/sync` endpoint. Syncs task text, completion and due date (`📅 YYYY-MM-DD`).
+- When both sides edited the same field, the most recent edit wins.
+- Hidden `%%td:<id>%%` marker on each synced line. A pending `%%td:new-<uuid>%%` marker and an idempotent command id make creation safe against crashes and retries.
+- Inline chip in live preview and reading view, showing project, due date, recurrence, priority and labels. Clicking it opens the task in Todoist.
+- Exclusions by folder or note path, by `todoist: false` frontmatter, and by `#notodoist` on a line. Code blocks, empty checkboxes and already-ticked checkboxes are never synced.
+- Folder → project mapping and `todoist_project:` frontmatter. Everything else goes to the Inbox.
+- First-run backfill preview, grouped by folder. Sync stays paused until you confirm.
+- Nothing is ever deleted: removing a line unlinks the task, and a task deleted in Todoist shows as a struck-through chip.
+- Per-device **This device creates tasks** setting, for Obsidian Sync setups.
+- Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**.
+- Built for mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Mobile is not yet tested.
+
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/commits/dev
