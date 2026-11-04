@@ -1,0 +1,40 @@
+.inline-tasks-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin-left: 0.4em;
+  padding: 0 0.5em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-smaller);
+  line-height: 1.6;
+  text-decoration: none;
+  vertical-align: baseline;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.inline-tasks-chip:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  text-decoration: none;
+}
+.inline-tasks-icon {
+  width: 0.75em;
+  height: 0.75em;
+  border-radius: 3px;
+  background: #e44332; /* Todoist red */
+}
+.inline-tasks-due.is-overdue { color: var(--text-error); }
+.inline-tasks-priority.p1 { color: #d1453b; font-weight: 600; }
+.inline-tasks-priority.p2 { color: #eb8909; font-weight: 600; }
+.inline-tasks-priority.p3 { color: #246fe0; font-weight: 600; }
+.inline-tasks-chip.is-pending { opacity: 0.6; font-style: italic; }
+.inline-tasks-chip.is-pending .inline-tasks-icon { background: var(--text-faint); }
+.inline-tasks-chip.is-orphaned { text-decoration: line-through; opacity: 0.7; }
+.inline-tasks-chip.is-orphaned .inline-tasks-icon { background: var(--text-faint); }
+.inline-tasks-chip.is-done .inline-tasks-icon { background: var(--text-faint); }
+.inline-tasks-backfill-list { max-height: 14em; overflow-y: auto; }
+.inline-tasks-suggest-path { color: var(--text-muted); font-size: var(--font-smallest); }
+.inline-tasks-suggest-create { color: var(--text-accent); }
