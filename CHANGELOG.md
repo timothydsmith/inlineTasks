@@ -16,6 +16,8 @@ First release, planned as 0.1.0.
 - Inline chip in live preview and reading view, showing project, due date, recurrence, priority and labels. Clicking it opens the task in Todoist.
 - Exclusions by folder or note path, by `todoist: false` frontmatter, and by `#notodoist` on a line. Code blocks, empty checkboxes and already-ticked checkboxes are never synced.
 - Folder → project mapping and `todoist_project:` frontmatter. Everything else goes to the Inbox.
+- `#[Project name]` on a checkbox line files the task in that project: a new task is created there, and a synced task is moved. A missing project is created. The reference is removed from the line once applied, since the chip shows the project.
+- Typing `#` on a checkbox line opens a menu of Todoist projects to pick from. `#[` plus a new name offers to create the project. A bare `#tag` that matches no project is left to Obsidian's tag suggestions.
 - First-run backfill preview, grouped by folder. Sync stays paused until you confirm.
 - Nothing is ever deleted: removing a line unlinks the task, and a task deleted in Todoist shows as a struck-through chip.
 - Per-device **This device creates tasks** setting, for Obsidian Sync setups.

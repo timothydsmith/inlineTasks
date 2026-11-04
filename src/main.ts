@@ -6,6 +6,7 @@ import { emptyState, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
+import { ProjectSuggest } from "./ui/projectSuggest";
 import { readingChipProcessor } from "./ui/readingChip";
 
 interface PluginData {
@@ -56,6 +57,7 @@ export default class InlineTasksPlugin extends Plugin {
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion));
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state));
+    this.registerProjectSuggest();
 
     this.registerEvent(this.app.vault.on("modify", (f) => this.markDirty(f)));
     this.registerEvent(this.app.vault.on("rename", (f, old) => this.engine.onRename(old, f.path)));
@@ -67,6 +69,8 @@ export default class InlineTasksPlugin extends Plugin {
       id: "sync-now",
       name: "Sync now",
       callback: async () => {
+        const path = await this.saveActiveEditor();
+        if (path) this.dirty.add(path);
         await this.flush(true);
         await this.runPull(true);
       },
@@ -77,7 +81,13 @@ export default class InlineTasksPlugin extends Plugin {
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         if (!file || file.extension !== "md") return false;
-        if (!checking) void this.guard(() => this.engine.pushFile(file.path), true);
+        if (!checking) {
+          void this.guard(async () => {
+            await this.saveActiveEditor();
+            await this.engine.pushFile(file.path);
+            this.refresh();
+          }, true);
+        }
         return true;
       },
     });
@@ -114,6 +124,22 @@ export default class InlineTasksPlugin extends Plugin {
     return `inline-tasks:${this.app.vault.getName()}:canCreate`;
   }
 
+  private registerProjectSuggest(): void {
+    const suggest = new ProjectSuggest(
+      this.app,
+      () => this.state,
+      (file) => !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path),
+    );
+    this.registerEditorSuggest(suggest);
+    // Obsidian asks suggesters in order and its own tag suggester would claim `#` first.
+    // Ours steps aside (returns null) for anything that isn't a project, so put it at the front.
+    // `editorSuggest.suggests` is internal; if it ever moves, the picker still works wherever the tag suggester doesn't claim `#`.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const list = (this.app.workspace as any).editorSuggest?.suggests as unknown[] | undefined;
+    const i = list?.indexOf(suggest) ?? -1;
+    if (list && i > 0) list.unshift(...list.splice(i, 1));
+  }
+
   // ------------------------------------------------------------ scheduling
 
   schedulePull(): void {
@@ -135,8 +161,8 @@ export default class InlineTasksPlugin extends Plugin {
     this.dirty.clear();
     for (const path of paths) {
       if (!(this.app.vault.getAbstractFileByPath(path) instanceof TFile)) continue;
-      const skipLine = force ? undefined : this.cursorLine(path);
-      const res = await this.guard(() => this.engine.pushFile(path, { skipLine }));
+      const editor = force ? undefined : () => this.openEditor(path);
+      const res = await this.guard(() => this.engine.pushFile(path, { editor }));
       if (!res || res.deferred) this.dirty.add(path);
     }
     this.refresh();
@@ -149,10 +175,19 @@ export default class InlineTasksPlugin extends Plugin {
     if (notify) new Notice("Todoist: synced");
   }
 
-  private cursorLine(path: string): number | undefined {
+  /** Write the active editor's unsaved text to disk, so an explicit sync pushes what's on screen. */
+  private async saveActiveEditor(): Promise<string | undefined> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view?.file) return undefined;
+    await view.save();
+    return view.file.path;
+  }
+
+  /** Text and cursor line of the active editor, if it's editing `path`. */
+  private openEditor(path: string): { content: string; cursorLine: number } | undefined {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (view?.file?.path !== path || view.getMode() !== "source") return undefined;
-    return view.editor.getCursor().line;
+    return { content: view.editor.getValue(), cursorLine: view.editor.getCursor().line };
   }
 
   private async guard<T>(fn: () => Promise<T>, notify = false): Promise<T | undefined> {

@@ -31,6 +31,13 @@ export interface EngineSettings {
 export interface PushOptions {
   /** Line currently being edited; new tasks on it are not created yet. */
   skipLine?: number;
+  /**
+   * The open editor for this note, read when the push actually runs (after any queued sync):
+   * its full text and cursor line. If the text differs from the saved file, the user is mid-edit
+   * and the cursor line can't be trusted to point at the same line on disk, so the whole push is
+   * deferred until Obsidian has saved. Otherwise the cursor line is treated as `skipLine`.
+   */
+  editor?: () => { content: string; cursorLine: number } | undefined;
 }
 
 export interface PushResult {
@@ -92,9 +99,15 @@ export class SyncEngine {
       }
     }
     if (!name) return undefined; // Inbox
-    const match = Object.entries(this.state.projects).find(([, p]) => p.name.toLowerCase() === name!.toLowerCase());
-    if (!match) this.log(`Project "${name}" not found in Todoist; using Inbox`);
-    return match?.[0];
+    const id = this.findProject(name);
+    if (!id) this.log(`Project "${name}" not found in Todoist; using Inbox`);
+    return id;
+  }
+
+  /** Id of the active (non-archived) project with this name, ignoring case and surrounding spaces. */
+  findProject(name: string): string | undefined {
+    const key = projectKey(name);
+    return Object.entries(this.state.projects).find(([, p]) => !p.archived && projectKey(p.name) === key)?.[0];
   }
 
   private backlink(path: string, pendingUuid: string): string {
@@ -134,6 +147,14 @@ export class SyncEngine {
 
   private async pushFileInner(path: string, opts: PushOptions): Promise<PushResult> {
     if (!this.state.backfillDone || !this.isFileEligible(path)) return { deferred: false };
+    if (opts.editor) {
+      const disk = await this.vault.read(path);
+      const ed = opts.editor();
+      if (ed) {
+        if (ed.content !== disk) return { deferred: true };
+        opts = { ...opts, skipLine: ed.cursorLine };
+      }
+    }
     const { canCreate } = this.settings();
     let deferred = false;
 
@@ -164,8 +185,32 @@ export class SyncEngine {
     const commands: Command[] = [];
     const onOk: Record<string, () => void> = {};
     const seenIds = new Set<string>();
+    /** Real task ids whose `#[Project]` reference should be removed from the line. */
+    const stripRefs = new Set<string>();
+    /** Projects created by this push: temp id → lower-cased name. */
+    const newProjects = new Map<string, string>();
 
-    for (const { task } of tasks) {
+    /** Project id for a `#[Name]` reference, queueing a `project_add` if it doesn't exist yet. */
+    const projectTarget = (name: string): string | undefined => {
+      const existing = this.findProject(name);
+      if (existing) return existing;
+      const key = projectKey(name);
+      for (const [tmp, k] of newProjects) if (k === key) return tmp;
+      if (this.state.pendingProjects[key]) {
+        // An earlier create of this project got no answer. Wait for the next pull, which either
+        // brings it in or shows it was never made, rather than risk creating it twice.
+        deferred = true;
+        return undefined;
+      }
+      if (!canCreate) return undefined; // hold; a device that may create will file it
+      const tmp = makeUuid();
+      this.state.pendingProjects[key] = tmp;
+      newProjects.set(tmp, key);
+      commands.push({ type: "project_add", uuid: tmp, temp_id: tmp, args: { name: name.trim() } });
+      return tmp;
+    };
+
+    for (const { line, task } of tasks) {
       const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
 
       if (task.pendingUuid) {
@@ -176,7 +221,8 @@ export class SyncEngine {
           content: task.text,
           description: this.backlink(path, task.pendingUuid),
         };
-        const projectId = this.projectIdFor(path);
+        const projectId = task.projectRef ? projectTarget(task.projectRef) : this.projectIdFor(path);
+        if (task.projectRef && !projectId) continue; // project can't be created on this device
         if (projectId) args.project_id = projectId;
         if (task.due) args.due = { date: task.due };
         // Same uuid on retry: Todoist de-duplicates commands it has already applied.
@@ -188,13 +234,31 @@ export class SyncEngine {
       const id = task.todoistId;
       seenIds.add(id);
       let rec = this.state.tasks[id];
+      let adopted = false;
       if (!rec) {
         // Marker appeared here without a record (pasted from another note, or created elsewhere): adopt it.
         rec = this.state.tasks[id] = { path, base: local };
-        continue;
+        adopted = true;
       }
       rec.path = path;
       if (rec.orphaned) continue;
+
+      // `#[Project]` on a synced task: move it, then strip the reference. Not while the line is being edited.
+      if (task.projectRef) {
+        if (line === opts.skipLine) {
+          deferred = true;
+        } else {
+          const target = projectTarget(task.projectRef);
+          if (target && target === this.state.remote[id]?.projectId) {
+            stripRefs.add(id); // already there
+          } else if (target) {
+            const cmd: Command = { type: "item_move", uuid: makeUuid(), args: { id, project_id: target } };
+            commands.push(cmd);
+            onOk[cmd.uuid] = () => stripRefs.add(id);
+          }
+        }
+      }
+      if (adopted) continue;
 
       const { push } = merge(rec.base, local, rec.base, 0, 0);
       if (isEmpty(push)) continue;
@@ -214,14 +278,21 @@ export class SyncEngine {
     }
 
     if (!commands.length) {
+      if (stripRefs.size) await this.stripProjectRefs(path, stripRefs);
       await this.save();
       return { deferred };
     }
 
-    // 3. Send.
+    // 3. Send. Persist in-flight project creates first, so a crash mid-request is detected on restart.
+    if (newProjects.size) await this.save();
     const mapping: Record<string, string> = {};
     for (let i = 0; i < commands.length; i += BATCH) {
       const batch = commands.slice(i, i + BATCH);
+      // A project created in an earlier batch is referenced by its real id from here on.
+      for (const cmd of batch) {
+        const pid = cmd.args.project_id;
+        if (typeof pid === "string" && mapping[pid]) cmd.args.project_id = mapping[pid];
+      }
       const res = await this.client.sync({ commands: batch });
       Object.assign(mapping, res.temp_id_mapping ?? {});
       for (const cmd of batch) {
@@ -231,12 +302,43 @@ export class SyncEngine {
       }
     }
 
-    // 4. Replace pending markers with real ids.
+    // New projects: record them so chips and later references resolve without waiting for a pull.
+    for (const [tmp, key] of newProjects) {
+      const realId = mapping[tmp];
+      if (!realId) continue; // de-duplicated retry; the next pull brings the project in
+      const cmd = commands.find((c) => c.uuid === tmp)!;
+      this.state.projects[realId] = { name: cmd.args.name as string };
+      delete this.state.pendingProjects[key];
+    }
+    for (const cmd of commands) {
+      if (cmd.type !== "item_move" || !stripRefs.has(cmd.args.id as string)) continue;
+      const meta = this.state.remote[cmd.args.id as string];
+      const pid = cmd.args.project_id as string;
+      if (meta) meta.projectId = mapping[pid] ?? pid;
+    }
+
+    // 4. Replace pending markers with real ids, and strip project references that have been applied.
     const resolved = Object.entries(mapping).filter(([tmp]) => this.state.pending[tmp]);
     if (resolved.length) await this.resolvePending(path, resolved);
+    if (stripRefs.size) await this.stripProjectRefs(path, stripRefs);
 
     await this.save();
     return { deferred };
+  }
+
+  private async stripProjectRefs(path: string, ids: Set<string>): Promise<void> {
+    await this.vault.process(path, (content) => {
+      const lines = content.split("\n");
+      let changed = false;
+      for (const id of ids) {
+        const idx = findLineByMarker(lines, id);
+        const task = idx >= 0 ? parseTaskLine(lines[idx]) : null;
+        if (!task?.projectRef) continue;
+        lines[idx] = serializeTask({ ...task, projectRef: null });
+        changed = true;
+      }
+      return changed ? lines.join("\n") : content;
+    });
   }
 
   private async resolvePending(path: string, pairs: [string, string][]): Promise<void> {
@@ -248,7 +350,8 @@ export class SyncEngine {
         if (idx < 0) continue;
         const task = parseTaskLine(lines[idx]);
         if (!task) continue;
-        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId });
+        // The create carried the line's `#[Project]`, so the reference has done its job.
+        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId, projectRef: null });
         this.state.tasks[realId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
       }
       return lines.join("\n");
@@ -262,16 +365,28 @@ export class SyncEngine {
   }
 
   private async pullInner(): Promise<void> {
+    // Projects saved before archived/parent were tracked need one full sync to fill them in.
+    const stale = Object.values(this.state.projects).some((p) => p.parentId === undefined);
     const res = await this.client.sync({
-      syncToken: this.state.syncToken ?? "*",
+      syncToken: stale ? "*" : (this.state.syncToken ?? "*"),
       resourceTypes: ["items", "projects"],
     });
 
     if (res.full_sync) this.state.projects = {};
     for (const p of res.projects ?? []) {
       if (p.is_deleted) delete this.state.projects[p.id];
-      else this.state.projects[p.id] = { name: p.name, color: p.color, inbox: p.inbox_project };
+      else {
+        this.state.projects[p.id] = {
+          name: p.name,
+          color: p.color,
+          inbox: p.inbox_project,
+          archived: p.is_archived,
+          parentId: p.parent_id ?? null,
+        };
+      }
     }
+    // Any unconfirmed project create has now either arrived above or never happened.
+    this.state.pendingProjects = {};
 
     const byPath = new Map<string, TodoistItem[]>();
     const pendingResolutions = new Map<string, [string, string][]>();
@@ -370,6 +485,11 @@ export class SyncEngine {
     for (const [id, rec] of Object.entries(this.state.tasks)) if (rec.path === path) delete this.state.tasks[id];
     void this.save();
   }
+}
+
+/** Comparison key for project names: case- and whitespace-insensitive. */
+export function projectKey(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function pickFields(src: TaskFields, keys: Partial<TaskFields>): Partial<TaskFields> {

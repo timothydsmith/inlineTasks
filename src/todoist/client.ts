@@ -39,6 +39,7 @@ export interface TodoistProject {
   inbox_project?: boolean;
   is_deleted?: boolean;
   is_archived?: boolean;
+  parent_id?: string | null;
 }
 
 export interface Command {

@@ -8,6 +8,8 @@
  *                      `%%td:new-<uuid>%%` marks a task whose creation is in flight.
  * - `📅 YYYY-MM-DD`    optional due date (Tasks-plugin compatible).
  * - `#notodoist`       opt this line out of syncing.
+ * - `#[Project name]`  file the task in that Todoist project (created if missing).
+ *                      Stripped from the line once Todoist has applied it; the chip shows the project.
  */
 
 export interface TaskFields {
@@ -26,6 +28,8 @@ export interface ParsedTask extends TaskFields {
   /** Pending creation uuid (from `%%td:new-<uuid>%%`), or null. */
   pendingUuid: string | null;
   excluded: boolean;
+  /** Project named by a `#[Project name]` reference on the line, or null. The last one wins. */
+  projectRef: string | null;
 }
 
 const CHECKBOX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)\[(.)\]\s?(.*)$/;
@@ -34,6 +38,7 @@ const MARKER_RE_G = /\s*%%td:[A-Za-z0-9_-]+%%/g;
 const DUE_RE = /\s*📅\s*(\d{4}-\d{2}-\d{2})/;
 const DUE_RE_G = /\s*📅\s*\d{4}-\d{2}-\d{2}/g;
 const OPT_OUT_RE = /(^|\s)#notodoist(\s|$)/;
+const PROJECT_RE_G = /(^|\s)#\[([^\]\n]*)\]/g;
 const PENDING_PREFIX = "new-";
 
 export function parseTaskLine(line: string): ParsedTask | null {
@@ -45,7 +50,15 @@ export function parseTaskLine(line: string): ParsedTask | null {
   const markerId = marker ? marker[1] : null;
   const due = DUE_RE.exec(rest);
 
-  const text = rest.replace(MARKER_RE_G, "").replace(DUE_RE_G, "").replace(/\s+/g, " ").trim();
+  let projectRef: string | null = null;
+  for (const p of rest.matchAll(PROJECT_RE_G)) projectRef = p[2].trim() || projectRef;
+
+  const text = rest
+    .replace(MARKER_RE_G, "")
+    .replace(DUE_RE_G, "")
+    .replace(PROJECT_RE_G, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
 
   return {
     prefix,
@@ -56,6 +69,7 @@ export function parseTaskLine(line: string): ParsedTask | null {
     todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
     pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
     excluded: OPT_OUT_RE.test(text) || text.length === 0,
+    projectRef,
   };
 }
 
@@ -69,6 +83,7 @@ export function markerFor(task: Pick<ParsedTask, "todoistId" | "pendingUuid">): 
 export function serializeTask(task: ParsedTask): string {
   const status = task.checked ? (task.status !== " " ? task.status : "x") : " ";
   let out = `${task.prefix}[${status}] ${task.text}`;
+  if (task.projectRef) out += ` #[${task.projectRef}]`;
   if (task.due) out += ` 📅 ${task.due}`;
   const marker = markerFor(task);
   if (marker) out += ` ${marker}`;

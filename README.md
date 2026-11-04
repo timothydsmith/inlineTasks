@@ -26,10 +26,11 @@ renders as
   - Deleting a line in Obsidian only unlinks the task.
   - Deleting a task in Todoist strikes through the chip.
 - **New tasks** go to the Inbox. To send them elsewhere:
+  - Type `#` on the checkbox line and pick a project (see [Filing a task in a project](#filing-a-task-in-a-project)).
   - Map folders to projects in settings.
   - Set `todoist_project: Work` in a note's frontmatter.
 - **When sync runs:**
-  - Pushes happen about 3s after you stop typing. A new task on the line you're still editing is held back until you move off it.
+  - Pushes happen a few seconds after you stop typing, once Obsidian has saved the note. A new task on the line you're still editing is held back until you move off it. **Sync now** and **Sync current note** save the note first and push straight away.
   - Pulls happen every 5 minutes, whenever Obsidian regains focus, and on **Sync now**.
 
 ### What the chip shows
@@ -43,6 +44,24 @@ renders as
 | grey icon | Task is completed |
 | *syncing…* | Create is in flight |
 | ~~deleted in Todoist~~ | Task was deleted in Todoist. Remove the marker to unlink it. |
+
+### Filing a task in a project
+
+Type `#` on a checkbox line to open a menu of your Todoist projects, then keep typing to filter. Picking one inserts a project reference:
+
+```markdown
+- [ ] Get tiling quotes #[Home Reno]
+```
+
+When the task next syncs, it's filed in that project and the reference is removed from the line. The chip shows the project from then on.
+
+- **New task:** created directly in that project.
+- **Already-synced task:** moved to that project. Add another reference later to move it again.
+- **Project doesn't exist:** type `#[` and a new name, and the menu offers **Create project “…”**. A reference you type by hand to a missing project also creates it.
+- **Matching** ignores case and extra spaces. Archived projects are skipped, so naming one creates a new active project with the same name.
+- **Timing:** like new tasks, the reference is applied once you move off the line, or straight away with **Sync now**.
+- **Precedence:** a reference beats folder mappings and `todoist_project:` frontmatter.
+- **Ordinary tags still work.** A bare `#word` only opens the project menu when it matches a project's name; press Esc or Space to keep typing it as a tag. Only the `#[…]` form files a task.
 
 ### Excluding things
 - **Folders or notes** listed in settings (defaults to `Templates`). An entry matches a folder and everything inside it, or a single note by its path, e.g. `Journal/Private.md`.
@@ -88,7 +107,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 |---|---|---|
 | Todoist API token | — | **Test** checks the connection and opens the backfill preview on first run. |
 | Excluded folders | `Templates` | One folder or note path per line. |
-| Folder → project | none | One `Folder = Project` per line. The longest matching folder wins. A note's `todoist_project:` frontmatter overrides it. Unknown project names fall back to the Inbox. |
+| Folder → project | none | One `Folder = Project` per line. The longest matching folder wins. A note's `todoist_project:` frontmatter overrides it, and a `#[Project]` reference on a line overrides both. Unknown project names fall back to the Inbox. |
 | Pull interval (minutes) | 5 | Minimum 1. |
 | This device creates tasks | on | Stored per device, not in `data.json`. |
 | Backfill existing checkboxes | — | Opens the backfill preview. |
@@ -118,6 +137,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 
 - **Due times:** a time set in Todoist is shown as a date only. Changing the date in Obsidian replaces the due date with a date-only one, so the time is lost.
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
+- **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used.
 - **Not yet supported:** nested checkboxes as subtasks, editing priority or labels inline, and Todoist query blocks.
 
 ## Development
@@ -135,7 +155,7 @@ Layout:
 | `src/sync/merge.ts` | Three-way field merge |
 | `src/sync/engine.ts` | Push and pull against a `VaultAdapter`, independent of Obsidian |
 | `src/todoist/client.ts` | Todoist unified API v1 `/sync` client |
-| `src/ui/*` | Live-preview chip (CodeMirror 6), reading-view chip, backfill modal |
+| `src/ui/*` | Live-preview chip (CodeMirror 6), reading-view chip, `#` project picker, backfill modal |
 | `src/main.ts` | Obsidian wiring |
 
 ### Branches and releases

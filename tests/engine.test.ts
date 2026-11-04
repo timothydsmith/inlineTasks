@@ -10,6 +10,11 @@ class FakeTodoist {
   seq = 0;
   nextId = 1;
   calls: Command[][] = [];
+  projects: { id: string; name: string; seq: number; inbox_project?: boolean; is_archived?: boolean }[] = [
+    { id: "inbox", name: "Inbox", inbox_project: true, seq: 0 },
+    { id: "P2", name: "Work", seq: 0 },
+    { id: "PA", name: "Old", is_archived: true, seq: 0 },
+  ];
 
   http = async (req: HttpRequest) => {
     const form = new URLSearchParams(req.body);
@@ -22,7 +27,12 @@ class FakeTodoist {
       if (this.seenUuids.has(c.uuid)) continue; // idempotent, like Todoist
       this.seenUuids.add(c.uuid);
       const a = c.args as Record<string, any>;
-      if (c.type === "item_add") {
+      if (typeof a.project_id === "string" && temp_id_mapping[a.project_id]) a.project_id = temp_id_mapping[a.project_id];
+      if (c.type === "project_add") {
+        const id = `PX${this.projects.length}`;
+        this.projects.push({ id, name: a.name, seq: ++this.seq });
+        if (c.temp_id) temp_id_mapping[c.temp_id] = id;
+      } else if (c.type === "item_add") {
         const id = `T${this.nextId++}`;
         this.items.set(id, {
           id, content: a.content, description: a.description, project_id: a.project_id ?? "inbox",
@@ -36,6 +46,7 @@ class FakeTodoist {
           if ("due" in a) it.due = a.due;
         } else if (c.type === "item_close") it.checked = true;
         else if (c.type === "item_uncomplete") it.checked = false;
+        else if (c.type === "item_move") it.project_id = a.project_id;
         it.seq = ++this.seq;
       }
     }
@@ -50,7 +61,7 @@ class FakeTodoist {
       status: 200,
       json: {
         sync_token: String(this.seq), full_sync: full, items,
-        projects: full ? [{ id: "inbox", name: "Inbox", inbox_project: true }, { id: "P2", name: "Work" }] : [],
+        projects: this.projects.filter((p) => full || p.seq > Number(form.get("sync_token"))),
         sync_status, temp_id_mapping,
       },
     };
@@ -110,6 +121,22 @@ describe("SyncEngine", () => {
     const r = await engine.pushFile("Note.md", { skipLine: 0 });
     expect(r.deferred).toBe(true);
     expect(todoist.items.size).toBe(0);
+  });
+
+  it("waits while the editor has unsaved changes, so a half-typed line is never created", async () => {
+    // Saved after the user paused at "#not"; they then pressed Enter, which isn't saved yet.
+    vault.files.set("Note.md", "- [ ] done\n- [ ] Test Tag #not");
+    const editor = { content: "- [ ] done\n- [ ] Test Tag #not\n- [ ] ", cursorLine: 2 };
+    const r = await engine.pushFile("Note.md", { editor: () => editor });
+    expect(r.deferred).toBe(true);
+    expect(todoist.items.size).toBe(0);
+
+    // Back on the line, finishing the tag; Obsidian saves, so disk and editor agree again.
+    editor.content = "- [ ] done\n- [ ] Test Tag #notodoist";
+    editor.cursorLine = 1;
+    vault.files.set("Note.md", editor.content);
+    await engine.pushFile("Note.md", { editor: () => editor });
+    expect([...todoist.items.values()].map((i) => i.content)).toEqual(["done"]);
   });
 
   it("respects excluded folders, frontmatter opt-out and backfill gate", async () => {
@@ -219,6 +246,104 @@ describe("SyncEngine", () => {
     await engine.pull();
     expect(idOf(vault.files.get("Note.md")!)).toBe("T1");
     expect(state.pending).toEqual({});
+  });
+
+  describe("#[Project] references", () => {
+    const projectOf = (id: string) => todoist.items.get(id)!.project_id;
+
+    it("files a new task in the named project and strips the reference", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Send invoice #[work] 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      expect(projectOf("T1")).toBe("P2"); // matched ignoring case
+      expect(todoist.items.get("T1")!.content).toBe("Send invoice");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Send invoice 📅 2026-11-10 %%td:T1%%");
+    });
+
+    it("creates a missing project once, even when several lines name it", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] one #[Home Reno]\n- [ ] two #[home  reno]");
+      await engine.pushFile("Note.md");
+      const created = todoist.projects.filter((p) => p.name === "Home Reno");
+      expect(created).toHaveLength(1);
+      expect([projectOf("T1"), projectOf("T2")]).toEqual([created[0].id, created[0].id]);
+      expect(state.projects[created[0].id].name).toBe("Home Reno");
+      expect(state.pendingProjects).toEqual({});
+      expect(vault.files.get("Note.md")).toBe("- [ ] one %%td:T1%%\n- [ ] two %%td:T2%%");
+    });
+
+    it("does not file into an archived project of the same name", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] revive #[Old]");
+      await engine.pushFile("Note.md");
+      expect(projectOf("T1")).not.toBe("PA");
+      expect(todoist.projects.filter((p) => p.name === "Old")).toHaveLength(2);
+    });
+
+    it("moves a synced task when a reference is added, then strips it", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob #[Work] %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(projectOf("T1")).toBe("P2");
+      expect(state.remote["T1"].projectId).toBe("P2"); // chip updates before the next pull
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+      expect(todoist.items.get("T1")!.content).toBe("Call Bob"); // the reference never reaches the task text
+    });
+
+    it("leaves the reference alone while the cursor is on the line", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", "- [ ] Call Bob #[Work] %%td:T1%%");
+      const r = await engine.pushFile("Note.md", { skipLine: 0 });
+      expect(r.deferred).toBe(true);
+      expect(projectOf("T1")).toBe("inbox");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob #[Work] %%td:T1%%");
+    });
+
+    it("keeps the reference through a pull that rewrites the line", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob #[Work] %%td:T1%%");
+      todoist.edit("T1", { checked: true });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [x] Call Bob #[Work] %%td:T1%%");
+    });
+
+    it("holds a task whose project create got no answer until a pull settles it", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] tile quote #[Bathroom]");
+      const realHttp = todoist.http;
+      todoist.http = async (req) => { await realHttp(req); throw new Error("network"); };
+      engine = new SyncEngine(new TodoistClient(() => "tok", todoist.http), vault, state, () => settings, async () => {});
+      await expect(engine.pushFile("Note.md")).rejects.toThrow("network");
+      expect(Object.keys(state.pendingProjects)).toEqual(["bathroom"]);
+
+      todoist.http = realHttp;
+      engine = new SyncEngine(new TodoistClient(() => "tok", todoist.http), vault, state, () => settings, async () => {});
+      expect((await engine.pushFile("Note.md")).deferred).toBe(true); // waits rather than re-create
+      await engine.pull(); // brings in the project and the task created by the lost request
+      await engine.pushFile("Note.md");
+      expect(todoist.projects.filter((p) => p.name === "Bathroom")).toHaveLength(1);
+      expect(todoist.items.size).toBe(1);
+      expect(vault.files.get("Note.md")).toBe("- [ ] tile quote %%td:T1%%");
+    });
+
+    it("does not create projects on a device with creation disabled", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      settings.canCreate = false;
+      vault.files.set("Note.md", "- [ ] Call Bob #[Garden] %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.projects.some((p) => p.name === "Garden")).toBe(false);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob #[Garden] %%td:T1%%");
+    });
   });
 
   it("does not create tasks on a device with creation disabled", async () => {

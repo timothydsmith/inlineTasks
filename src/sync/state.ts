@@ -28,11 +28,25 @@ export interface SyncState {
   tasks: Record<string, TaskRecord>;
   pending: Record<string, PendingCreate>;
   remote: Record<string, RemoteMeta>;
-  projects: Record<string, { name: string; color?: string; inbox?: boolean }>;
+  projects: Record<string, ProjectInfo>;
+  /**
+   * Projects whose `project_add` (from a `#[Name]` reference) was sent but not confirmed, keyed by
+   * lower-cased name, value = command uuid. Tasks naming them wait for the next pull, which either
+   * brings the project in or proves it was never created; the pull then clears this map.
+   */
+  pendingProjects: Record<string, string>;
   /** True once the user has confirmed the initial backfill of existing checkboxes. */
   backfillDone: boolean;
 }
 
+export interface ProjectInfo {
+  name: string;
+  color?: string;
+  inbox?: boolean;
+  archived?: boolean;
+  parentId?: string | null;
+}
+
 export function emptyState(): SyncState {
-  return { syncToken: null, tasks: {}, pending: {}, remote: {}, projects: {}, backfillDone: false };
+  return { syncToken: null, tasks: {}, pending: {}, remote: {}, projects: {}, pendingProjects: {}, backfillDone: false };
 }
