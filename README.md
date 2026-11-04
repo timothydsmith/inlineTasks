@@ -83,6 +83,7 @@ Each device pushes the changes made on it:
 - **Typed here:** a change made in this device's editor is pushed within seconds.
 - **Arrived from elsewhere:** a change delivered by Obsidian Sync, OneDrive or another app is pushed only after the note has been unchanged for 2 minutes. By then the device you typed on has usually created the task, and its marker has synced across, so nothing is created twice and half-typed lines from the other device are never created.
 - **Written by a script or agent:** notes written directly to disk count as arriving from elsewhere, so their tasks appear in Todoist about 2 minutes later.
+- **Who creates those:** after the wait, edits to tasks that are already linked are pushed by whichever device sees them. New checkboxes that arrived from elsewhere are created only by devices with **Create tasks for changes from other devices or apps** turned on. It's on for desktop and off for mobile by default, so a note written by an agent is created once, not once per device. Keep it on for exactly one device. If it's on for none, tasks written by a script won't be created until you edit the line.
 
 Creation is also crash- and retry-safe:
 1. A pending marker `%%td:new-<uuid>%%` is written to the note before the task is sent.
@@ -116,7 +117,8 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | Excluded folders | `Templates` | One folder or note path per line. |
 | Folder → project | none | One `Folder = Project` per line. The longest matching folder wins. A note's `todoist_project:` frontmatter overrides it, and a `#[Project]` reference on a line overrides both. Unknown project names fall back to the Inbox. |
 | Pull interval (minutes) | 5 | Minimum 1. |
-| This device creates tasks | on | Stored per device, not in `data.json`. |
+| This device creates tasks | on | Stored per device, not in `data.json`. Off means this device never creates tasks, even ones typed here. |
+| Create tasks for changes from other devices or apps | on for desktop, off for mobile | Stored per device. See [Multiple devices](#multiple-devices-obsidian-sync). |
 | Backfill existing checkboxes | — | Opens the backfill preview. |
 
 ## Commands
@@ -126,6 +128,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | **Sync now** | Pushes every pending change, including the line you're on, then pulls. |
 | **Sync current note** | Pushes the active note immediately. |
 | **Review backfill of existing checkboxes** | Shows how many unsynced open checkboxes would be created, and creates them on confirm. |
+| **Save sync log to a note** | Writes this device's recent sync decisions to `Inline Tasks sync log (desktop).md` (or `android`, `ios`), so you can compare what each device did. |
 
 ## Privacy
 
@@ -138,7 +141,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Unlink one task:** delete its `%%td:…%%` marker. The Todoist task is left alone.
 - **Stop a note syncing:** add `todoist: false` to its frontmatter, or add its folder to **Excluded folders**. Edits in the note stop being pushed, but lines that already have a marker still receive changes made in Todoist. Delete those markers to unlink them completely.
 - **Nothing syncs:** check that the token works (**Test** in settings) and that the backfill has been confirmed.
-- **Logs:** open the developer console (Ctrl+Shift+I, or Cmd+Opt+I on macOS) and filter for `[inline-tasks]`. Rejected commands and merge conflicts are logged there.
+- **Logs:** open the developer console (Ctrl+Shift+I, or Cmd+Opt+I on macOS) and filter for `[inline-tasks]`. Rejected commands and merge conflicts are logged there. On mobile, use **Save sync log to a note** instead.
 
 ## Known limitations
 

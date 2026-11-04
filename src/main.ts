@@ -1,8 +1,8 @@
 import { EditorView } from "@codemirror/view";
-import { MarkdownView, Notice, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
+import { MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { SyncEngine, type VaultAdapter } from "./sync/engine";
-import { holdForOtherDevice } from "./sync/origin";
+import { OriginTracker } from "./sync/origin";
 import { emptyState, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
@@ -18,6 +18,7 @@ interface PluginData {
 
 const PUSH_DEBOUNCE_MS = 3000;
 const DIRTY_RETRY_MS = 15000;
+const LOG_LINES = 400;
 
 export default class InlineTasksPlugin extends Plugin {
   settings: InlineTasksSettings = { ...DEFAULT_SETTINGS };
@@ -30,10 +31,11 @@ export default class InlineTasksPlugin extends Plugin {
   private chipVersion = 0;
   private lastErrorAt = 0;
   private backfillPrompted = false;
-  /** When each note was last edited in this device's editor (see sync/origin.ts). */
-  private lastLocalEdit = new Map<string, number>();
+  /** Where each note's latest change came from (see sync/origin.ts). */
+  private origin = new OriginTracker();
   /** Last key press, click or tap in this window. */
   private lastInputAt = 0;
+  private logLines: string[] = [];
 
   async onload(): Promise<void> {
     const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
@@ -57,14 +59,14 @@ export default class InlineTasksPlugin extends Plugin {
       this.state,
       () => ({ ...this.settings, canCreate: this.canCreate }),
       () => this.saveAll(),
-      (msg) => console.log(`[inline-tasks] ${msg}`),
+      (msg) => this.log(msg),
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion));
     this.registerEditorExtension(
       localEditTracker(
-        (path) => this.lastLocalEdit.set(path, Date.now()),
+        (path) => this.origin.localEdit(path, Date.now()),
         () => this.lastInputAt,
       ),
     );
@@ -75,11 +77,10 @@ export default class InlineTasksPlugin extends Plugin {
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state));
     this.registerProjectSuggest();
 
-    this.registerEvent(this.app.vault.on("modify", (f) => this.markDirty(f)));
+    this.registerEvent(this.app.vault.on("modify", (f) => void this.onWrite(f)));
     this.registerEvent(
       this.app.vault.on("rename", (f, old) => {
-        const t = this.lastLocalEdit.get(old);
-        if (t !== undefined) this.lastLocalEdit.set(f.path, t);
+        this.origin.rename(old, f.path);
         this.engine.onRename(old, f.path);
       }),
     );
@@ -114,11 +115,13 @@ export default class InlineTasksPlugin extends Plugin {
       },
     });
     this.addCommand({ id: "backfill", name: "Review backfill of existing checkboxes", callback: () => this.openBackfill() });
+    this.addCommand({ id: "save-log", name: "Save sync log to a note", callback: () => this.saveLog() });
 
     this.app.workspace.onLayoutReady(async () => {
       // Registered here because Obsidian fires `create` for every file while the vault loads.
-      this.registerEvent(this.app.vault.on("create", (f) => this.markDirty(f)));
+      this.registerEvent(this.app.vault.on("create", (f) => void this.onWrite(f)));
       this.schedulePull();
+      this.log(`loaded on ${this.deviceName}; creates tasks: ${this.canCreate}, from elsewhere: ${this.createFromElsewhere}`);
       if (this.settings.apiToken) {
         await this.runPull();
         this.maybePromptBackfill();
@@ -135,15 +138,36 @@ export default class InlineTasksPlugin extends Plugin {
     await this.saveData({ settings: this.settings, state: this.state } satisfies PluginData);
   }
 
-  /** Per-device setting, deliberately kept out of data.json (which Obsidian Sync shares). */
+  // ------------------------------------------------------------ per-device settings
+  // Kept in localStorage, not data.json, because Obsidian Sync shares data.json between devices.
+
+  /** Whether this device creates Todoist tasks at all. */
   get canCreate(): boolean {
-    return window.localStorage.getItem(this.deviceKey) !== "false";
+    return window.localStorage.getItem(this.deviceKey("canCreate")) !== "false";
   }
   set canCreate(v: boolean) {
-    window.localStorage.setItem(this.deviceKey, String(v));
+    window.localStorage.setItem(this.deviceKey("canCreate"), String(v));
   }
-  private get deviceKey(): string {
-    return `inline-tasks:${this.app.vault.getName()}:canCreate`;
+
+  /**
+   * Whether this device creates tasks for checkboxes that arrived from another device or app (after
+   * the quiet period). On by default on desktop and off on mobile, so a note written by a script or
+   * agent is created once, by the desktop, not once per device.
+   */
+  get createFromElsewhere(): boolean {
+    const v = window.localStorage.getItem(this.deviceKey("createFromElsewhere"));
+    return v === null ? !Platform.isMobile : v === "true";
+  }
+  set createFromElsewhere(v: boolean) {
+    window.localStorage.setItem(this.deviceKey("createFromElsewhere"), String(v));
+  }
+
+  private deviceKey(name: string): string {
+    return `inline-tasks:${this.app.vault.getName()}:${name}`;
+  }
+
+  private get deviceName(): string {
+    return Platform.isMobile ? (Platform.isAndroidApp ? "android" : Platform.isIosApp ? "ios" : "mobile") : "desktop";
   }
 
   private registerProjectSuggest(): void {
@@ -155,6 +179,31 @@ export default class InlineTasksPlugin extends Plugin {
     this.registerEditorSuggest(suggest);
   }
 
+  // ------------------------------------------------------------ log
+
+  log(msg: string): void {
+    const line = `${new Date().toISOString().slice(11, 19)} ${msg}`;
+    console.log(`[inline-tasks] ${msg}`);
+    this.logLines.push(line);
+    if (this.logLines.length > LOG_LINES) this.logLines.splice(0, this.logLines.length - LOG_LINES);
+  }
+
+  private async saveLog(): Promise<void> {
+    const path = `Inline Tasks sync log (${this.deviceName}).md`;
+    const body = [
+      `Sync log from ${this.deviceName}, saved ${new Date().toISOString()} (times are UTC).`,
+      "",
+      "```",
+      ...this.logLines,
+      "```",
+      "",
+    ].join("\n");
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFile) await this.app.vault.modify(existing, body);
+    else await this.app.vault.create(path, body);
+    new Notice(`Saved ${path}`);
+  }
+
   // ------------------------------------------------------------ scheduling
 
   schedulePull(): void {
@@ -163,8 +212,11 @@ export default class InlineTasksPlugin extends Plugin {
     this.registerInterval(this.pullTimer);
   }
 
-  private markDirty(f: TAbstractFile): void {
-    if (!(f instanceof TFile) || f.extension !== "md") return;
+  /** A note was written: note where the change came from, then schedule a push. */
+  private async onWrite(f: TAbstractFile): Promise<void> {
+    if (!(f instanceof TFile) || f.extension !== "md" || f.path.startsWith("Inline Tasks sync log")) return;
+    const origin = this.origin.modified(f.path, await this.app.vault.read(f), Date.now());
+    if (origin !== "own") this.log(`${f.path}: changed (${origin})`);
     this.dirty.add(f.path);
     if (this.pushTimer) window.clearTimeout(this.pushTimer);
     this.pushTimer = window.setTimeout(() => void this.flush(), PUSH_DEBOUNCE_MS);
@@ -175,15 +227,17 @@ export default class InlineTasksPlugin extends Plugin {
     const paths = [...this.dirty];
     this.dirty.clear();
     for (const path of paths) {
-      const file = this.app.vault.getAbstractFileByPath(path);
-      if (!(file instanceof TFile)) continue;
+      if (!(this.app.vault.getAbstractFileByPath(path) instanceof TFile)) continue;
+      const status = this.origin.status(path, Date.now());
       // Changed on another device (or by another app): let that device push it first.
-      if (!force && holdForOtherDevice(this.lastLocalEdit.get(path), file.stat.mtime, Date.now())) {
+      if (!force && status.hold) {
         this.dirty.add(path);
         continue;
       }
+      const noCreate = !force && status.fromElsewhere && !this.createFromElsewhere;
       const editor = force ? undefined : () => this.openEditor(path);
-      const res = await this.guard(() => this.engine.pushFile(path, { editor }));
+      const res = await this.guard(() => this.engine.pushFile(path, { editor, noCreate }));
+      if (res?.deferred) this.log(`${path}: deferred (being edited)`);
       if (!res || res.deferred) this.dirty.add(path);
     }
     this.refresh();
@@ -216,6 +270,7 @@ export default class InlineTasksPlugin extends Plugin {
       return await fn();
     } catch (e) {
       console.error("[inline-tasks]", e);
+      this.log(`error: ${(e as Error).message}`);
       // Network blips are retried silently; surface auth errors and explicit requests (at most once a minute).
       const auth = e instanceof TodoistError && (e.status === 401 || e.status === 403 || !e.status);
       if (notify || (auth && Date.now() - this.lastErrorAt > 60_000)) {
@@ -270,12 +325,12 @@ export default class InlineTasksPlugin extends Plugin {
     return {
       read: (p) => vault.read(file(p)),
       process: async (p, fn) => {
-        const f = file(p);
-        // Our own write bumps mtime. Keep the note's origin as it was: if it counted as edited
-        // here (or had gone quiet), it still does, rather than looking like a change from elsewhere.
-        const local = !holdForOtherDevice(this.lastLocalEdit.get(p), f.stat.mtime, Date.now());
-        await vault.process(f, fn);
-        if (local) this.lastLocalEdit.set(p, Date.now());
+        // Remember what we write, so the resulting modify event is recognised as our own.
+        await vault.process(file(p), (content) => {
+          const out = fn(content);
+          if (out !== content) this.origin.ownWrite(p, out);
+          return out;
+        });
       },
       mtime: (p) => file(p).stat.mtime,
       frontmatter: (p) => {

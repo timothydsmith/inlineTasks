@@ -21,8 +21,9 @@ First release, planned as 0.1.0.
 - First-run backfill preview, grouped by folder. Sync stays paused until you confirm.
 - Nothing is ever deleted: removing a line unlinks the task, and a task deleted in Todoist shows as a struck-through chip.
 - Multi-device safety with Obsidian Sync: each device pushes changes typed in its own editor straight away, and waits 2 minutes before pushing changes that arrived from another device or app. This stops duplicate tasks, and half-typed lines from another device being created.
+- New checkboxes that arrive from another device or app are created only by devices with **Create tasks for changes from other devices or apps** on (desktop by default, not mobile), so a note written by a script or agent is created once.
 - Per-device **This device creates tasks** setting, as a fallback for Obsidian Sync setups.
-- Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**.
+- Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
 [Unreleased]: https://github.com/timothydsmith/inlineTasks/commits/dev

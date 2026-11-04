@@ -38,6 +38,8 @@ export interface PushOptions {
    * deferred until Obsidian has saved. Otherwise the cursor line is treated as `skipLine`.
    */
   editor?: () => { content: string; cursorLine: number } | undefined;
+  /** Push edits to existing tasks but create nothing new (tasks or projects) from this note now. */
+  noCreate?: boolean;
 }
 
 export interface PushResult {
@@ -155,7 +157,7 @@ export class SyncEngine {
         opts = { ...opts, skipLine: ed.cursorLine };
       }
     }
-    const { canCreate } = this.settings();
+    const canCreate = this.settings().canCreate && !opts.noCreate;
     let deferred = false;
 
     // 1. Assign pending markers to new tasks and write them to disk first, so a crash
@@ -177,7 +179,10 @@ export class SyncEngine {
       return newUuids.length ? lines.join("\n") : content;
     });
     for (const id of newUuids) this.state.pending[id] = { path, createdAt: Date.now() };
-    if (newUuids.length) await this.save();
+    if (newUuids.length) {
+      this.log(`${path}: creating ${newUuids.length} new task(s)`);
+      await this.save();
+    }
 
     // 2. Build commands.
     const content = await this.vault.read(path);
@@ -318,6 +323,7 @@ export class SyncEngine {
     }
 
     // 4. Replace pending markers with real ids, and strip project references that have been applied.
+    this.log(`${path}: sent ${commands.map((c) => c.type).join(", ")}`);
     const resolved = Object.entries(mapping).filter(([tmp]) => this.state.pending[tmp]);
     if (resolved.length) await this.resolvePending(path, resolved);
     if (stripRefs.size) await this.stripProjectRefs(path, stripRefs);

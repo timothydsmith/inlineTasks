@@ -101,6 +101,17 @@ export class InlineTasksSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Create tasks for changes from other devices or apps")
+      .setDesc(
+        "Stored per device. New checkboxes typed on this device are always created here. This decides who creates checkboxes that arrive from Obsidian Sync, a script or an agent, once the note has been quiet for 2 minutes. Keep it on for one device only (by default: on for desktop, off for mobile), so they're created once.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.createFromElsewhere).onChange((v) => {
+          this.plugin.createFromElsewhere = v;
+        }),
+      );
+
+    new Setting(containerEl)
       .setName("Backfill existing checkboxes")
       .setDesc(this.plugin.state.backfillDone ? "Done. New checkboxes sync automatically." : "Sync is paused until you review and confirm the backfill.")
       .addButton((b) => b.setButtonText("Review…").onClick(() => this.plugin.openBackfill()));

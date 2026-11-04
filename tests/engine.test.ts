@@ -374,6 +374,16 @@ describe("SyncEngine", () => {
     expect(vault.files.get("Note.md")).toBe("- [ ] phone task");
   });
 
+  it("with noCreate, updates existing tasks but creates none (a change synced in from elsewhere)", async () => {
+    vault.files.set("Note.md", "- [ ] Call Bob");
+    await engine.pushFile("Note.md");
+    vault.files.set("Note.md", "- [ ] Call Bob today %%td:T1%%\n- [ ] typed on the phone");
+    await engine.pushFile("Note.md", { noCreate: true });
+    expect(todoist.items.size).toBe(1);
+    expect(todoist.items.get("T1")!.content).toBe("Call Bob today");
+    expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob today %%td:T1%%\n- [ ] typed on the phone");
+  });
+
   it("counts backfill candidates per folder", async () => {
     vault.files.set("A.md", "- [ ] a\n- [x] done");
     vault.files.set("Projects/X.md", "- [ ] b\n- [ ] c %%td:T9%%\n- [ ] d");
