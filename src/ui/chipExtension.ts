@@ -17,10 +17,24 @@ class ChipWidget extends WidgetType {
     return other.markerId === this.markerId && other.version === this.version;
   }
   toDOM(): HTMLElement {
-    return renderChip(this.markerId, this.state());
+    const chip = renderChip(this.markerId, this.state()) as HTMLAnchorElement;
+    // CodeMirror would otherwise handle mousedown by moving the cursor into the marker, which
+    // removes the chip before the click lands. Swallow it here and open the link ourselves.
+    // The raw marker stays reachable with the keyboard or by clicking just beside the chip.
+    chip.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    chip.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (chip.href) window.open(chip.href, "_blank");
+    });
+    return chip;
   }
-  ignoreEvent(): boolean {
-    return false;
+  ignoreEvent(e: Event): boolean {
+    // true = CodeMirror leaves the event alone; the chip's own handlers deal with mouse events.
+    return e.type.startsWith("mouse") || e.type === "click";
   }
 }
 

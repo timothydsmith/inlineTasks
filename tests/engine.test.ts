@@ -66,7 +66,8 @@ class FakeVault implements VaultAdapter {
   files = new Map<string, string>();
   fm = new Map<string, Record<string, unknown>>();
   async read(p: string) { return this.files.get(p)!; }
-  async process(p: string, fn: (c: string) => string) { this.files.set(p, fn(this.files.get(p)!)); }
+  writes = 0;
+  async process(p: string, fn: (c: string) => string) { this.writes++; this.files.set(p, fn(this.files.get(p)!)); }
   mtime() { return Date.now(); }
   frontmatter(p: string) { return this.fm.get(p); }
   markdownFiles() { return [...this.files.keys()]; }
@@ -152,6 +153,18 @@ describe("SyncEngine", () => {
     todoist.edit("T1", { checked: true, content: "Call Bob!", due: { date: "2026-11-20T09:00:00" } });
     await engine.pull();
     expect(vault.files.get("Note.md")).toBe("intro\n  - [x] Call Bob! 📅 2026-11-20 %%td:T1%%\noutro");
+  });
+
+  it("does not rewrite the note when a pull changes nothing on its lines", async () => {
+    vault.files.set("Note.md", "- [ ] Call Bob");
+    await engine.pushFile("Note.md");
+    await engine.pull();
+    todoist.edit("T1", { priority: 4 }); // remote-only field
+    const before = vault.writes;
+    await engine.pull();
+    expect(vault.writes).toBe(before);
+    expect(state.remote["T1"].priority).toBe(4);
+    expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
   });
 
   it("merges independent edits on both sides", async () => {

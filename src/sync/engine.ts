@@ -308,30 +308,54 @@ export class SyncEngine {
     const commands: Command[] = [];
     for (const [path, items] of byPath) {
       const mtime = this.vault.mtime(path);
-      await this.vault.process(path, (content) => {
-        const lines = content.split("\n");
-        for (const item of items) {
-          const rec = this.state.tasks[item.id];
-          const idx = findLineByMarker(lines, item.id);
-          if (idx < 0) continue; // moved; the index will re-adopt it on the next push
-          const task = parseTaskLine(lines[idx]);
-          if (!task) continue;
-          const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
-          const remote: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
-          const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;
-          const m = merge(rec.base, local, remote, mtime, remoteAt);
-          if (m.conflicts.length) this.log(`Conflict on "${task.text}" (${m.conflicts.join(", ")}); resolved`);
-          if (!isEmpty(m.pull)) lines[idx] = serializeTask({ ...task, ...m.pull });
-          if (!isEmpty(m.push)) commands.push(...commandsFor(item.id, m.push));
-          rec.base = m.merged;
-        }
-        return lines.join("\n");
-      });
+      // Merge against the current content first; only write the note if a line actually changes,
+      // so remote-only changes (priority, labels, project) don't rewrite the file and bump its mtime.
+      let result = this.mergeFile(await this.vault.read(path), items, mtime);
+      if (result.changed) {
+        await this.vault.process(path, (content) => {
+          result = this.mergeFile(content, items, mtime);
+          return result.changed ? result.content : content;
+        });
+      }
+      for (const [id, base] of result.bases) this.state.tasks[id].base = base;
+      for (const c of result.conflicts) this.log(c);
+      commands.push(...result.commands);
     }
 
     if (commands.length) await this.client.sync({ commands });
     this.state.syncToken = res.sync_token;
     await this.save();
+  }
+
+  /** Pure: three-way merge each pulled item against its line in `content`. */
+  private mergeFile(content: string, items: TodoistItem[], mtime: number) {
+    const lines = content.split("\n");
+    const commands: Command[] = [];
+    const bases = new Map<string, TaskFields>();
+    const conflicts: string[] = [];
+    let changed = false;
+    for (const item of items) {
+      const rec = this.state.tasks[item.id];
+      const idx = findLineByMarker(lines, item.id);
+      if (idx < 0) continue; // moved; the index will re-adopt it on the next push
+      const task = parseTaskLine(lines[idx]);
+      if (!task) continue;
+      const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
+      const remote: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
+      const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;
+      const m = merge(rec.base, local, remote, mtime, remoteAt);
+      if (m.conflicts.length) conflicts.push(`Conflict on "${task.text}" (${m.conflicts.join(", ")}); resolved`);
+      if (!isEmpty(m.pull)) {
+        const next = serializeTask({ ...task, ...m.pull });
+        if (next !== lines[idx]) {
+          lines[idx] = next;
+          changed = true;
+        }
+      }
+      if (!isEmpty(m.push)) commands.push(...commandsFor(item.id, m.push));
+      bases.set(item.id, m.merged);
+    }
+    return { content: lines.join("\n"), changed, commands, bases, conflicts };
   }
 
   // ---------------------------------------------------------------- vault events
