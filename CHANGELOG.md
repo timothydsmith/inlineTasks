@@ -7,7 +7,9 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
-First release, planned as 0.1.0.
+## [0.1.0] - 2026-11-04
+
+First release. Needs Obsidian 1.8.7 or later.
 
 ### Added
 - Two-way sync between every open checkbox in the vault and Todoist, using the unified API v1 `/sync` endpoint. Syncs task text, completion and due date (`📅 YYYY-MM-DD`).
@@ -27,4 +29,5 @@ First release, planned as 0.1.0.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
-[Unreleased]: https://github.com/timothydsmith/inlineTasks/commits/dev
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.1.0...dev
+[0.1.0]: https://github.com/timothydsmith/inlineTasks/releases/tag/0.1.0

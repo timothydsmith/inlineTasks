@@ -93,6 +93,8 @@ If you still see duplicates, for example from editing the same note on two devic
 
 ## Install
 
+Needs Obsidian 1.8.7 or later, on desktop or mobile.
+
 ### From a release
 1. Download `main.js`, `manifest.json` and `styles.css` from the latest [GitHub release](https://github.com/timothydsmith/inlineTasks/releases).
 2. Copy them into `<vault>/.obsidian/plugins/inline-tasks/`.
