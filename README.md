@@ -26,7 +26,7 @@ renders as
   - Deleting a line in Obsidian only unlinks the task.
   - Deleting a task in Todoist strikes through the chip.
 - **New tasks** go to the Inbox. To send them elsewhere:
-  - Type `#` on the checkbox line and pick a project (see [Filing a task in a project](#filing-a-task-in-a-project)).
+  - Type `#[` on the checkbox line and pick a project (see [Filing a task in a project](#filing-a-task-in-a-project)).
   - Map folders to projects in settings.
   - Set `todoist_project: Work` in a note's frontmatter.
 - **When sync runs:**
@@ -47,7 +47,7 @@ renders as
 
 ### Filing a task in a project
 
-Type `#` on a checkbox line to open a menu of your Todoist projects, then keep typing to filter. Picking one inserts a project reference:
+Type `#[` on a checkbox line to open a menu of your Todoist projects, then keep typing to filter. Picking one inserts a project reference:
 
 ```markdown
 - [ ] Get tiling quotes #[Home Reno]
@@ -57,11 +57,11 @@ When the task next syncs, it's filed in that project and the reference is remove
 
 - **New task:** created directly in that project.
 - **Already-synced task:** moved to that project. Add another reference later to move it again.
-- **Project doesn't exist:** type `#[` and a new name, and the menu offers **Create project “…”**. A reference you type by hand to a missing project also creates it.
+- **Project doesn't exist:** keep typing the new name, and the menu offers **Create project “…”**. A reference you type by hand to a missing project also creates it.
 - **Matching** ignores case and extra spaces. Archived projects are skipped, so naming one creates a new active project with the same name.
 - **Timing:** like new tasks, the reference is applied once you move off the line, or straight away with **Sync now**.
 - **Precedence:** a reference beats folder mappings and `todoist_project:` frontmatter.
-- **Ordinary tags still work.** A bare `#word` only opens the project menu when it matches a project's name; press Esc or Space to keep typing it as a tag. Only the `#[…]` form files a task.
+- **Ordinary tags are unaffected.** Only `#[` opens the project menu, so `#tags` get Obsidian's usual tag suggestions and never file a task.
 
 ### Excluding things
 - **Folders or notes** listed in settings (defaults to `Templates`). An entry matches a folder and everything inside it, or a single note by its path, e.g. `Journal/Private.md`.

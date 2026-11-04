@@ -131,13 +131,6 @@ export default class InlineTasksPlugin extends Plugin {
       (file) => !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path),
     );
     this.registerEditorSuggest(suggest);
-    // Obsidian asks suggesters in order and its own tag suggester would claim `#` first.
-    // Ours steps aside (returns null) for anything that isn't a project, so put it at the front.
-    // `editorSuggest.suggests` is internal; if it ever moves, the picker still works wherever the tag suggester doesn't claim `#`.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const list = (this.app.workspace as any).editorSuggest?.suggests as unknown[] | undefined;
-    const i = list?.indexOf(suggest) ?? -1;
-    if (list && i > 0) list.unshift(...list.splice(i, 1));
   }
 
   // ------------------------------------------------------------ scheduling

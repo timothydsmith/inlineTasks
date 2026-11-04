@@ -17,15 +17,17 @@ type Choice =
   | { kind: "create"; name: string };
 
 const CHECKBOX_RE = /^\s*(?:[-*+]|\d+[.)])\s+\[.\]/;
-/** `#` (at line start or after a space) followed by the query, up to the cursor. `#[` allows spaces. */
-const QUERY_RE = /(?:^|\s)#(\[[^\]\n]*|[^\s#[\]]*)$/;
+/** `#[` (at line start or after a space) followed by the query, up to the cursor. */
+const QUERY_RE = /(?:^|\s)#\[([^\]\n]*)$/;
+/** From the cursor to the reference's closing `]`: an auto-paired bracket, or the rest of a name being edited. */
+const CLOSE_RE = /^[^\]\n#]*\]/;
 
 /**
- * Typing `#` on a checkbox line offers the user's Todoist projects. Picking one inserts
- * `#[Project name]`, which sync turns into the task's project and then removes from the line.
+ * Typing `#[` on a checkbox line offers the user's Todoist projects, or to create one. Picking one
+ * inserts `#[Project name]`, which sync turns into the task's project and then removes from the line.
  *
- * Plain `#tags` keep working: without `[`, the menu only opens when the text matches a project,
- * so Obsidian's own tag suggestions take over otherwise. Typing `#[` also offers to create a project.
+ * Only `#[` triggers it. `[` can't appear in a tag, so Obsidian's own tag suggester has already
+ * stepped aside by then and the two never compete; a bare `#` is always an ordinary tag.
  */
 export class ProjectSuggest extends EditorSuggest<Choice> {
   constructor(
@@ -38,7 +40,7 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
     this.setInstructions([
       { command: "↑↓", purpose: "choose" },
       { command: "↵", purpose: "file in project" },
-      { command: "esc", purpose: "keep as a tag" },
+      { command: "esc", purpose: "dismiss" },
     ]);
   }
 
@@ -51,22 +53,16 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
 
     const m = QUERY_RE.exec(line.slice(0, cursor.ch));
     if (!m) return null;
-    const hashAt = cursor.ch - m[1].length - 1;
+    const hashAt = cursor.ch - m[1].length - 2; // position of `#`
     const checkboxEnd = CHECKBOX_RE.exec(line)?.[0].length ?? 0;
     if (hashAt < checkboxEnd) return null;
-
-    const bracketed = m[1].startsWith("[");
-    const query = bracketed ? m[1].slice(1) : m[1];
-    // A bare `#word` is probably an ordinary tag: only step in if it matches a project.
-    if (!bracketed && query && !this.projects(query).length) return null;
-    return { start: { line: cursor.line, ch: hashAt }, end: cursor, query: bracketed ? `[${query}` : query };
+    return { start: { line: cursor.line, ch: hashAt }, end: cursor, query: m[1] };
   }
 
   getSuggestions(ctx: EditorSuggestContext): Choice[] {
-    const bracketed = ctx.query.startsWith("[");
-    const query = (bracketed ? ctx.query.slice(1) : ctx.query).trim();
+    const query = ctx.query.trim();
     const out: Choice[] = this.projects(query);
-    if (bracketed && query && !out.some((c) => c.kind === "project" && projectKey(c.name) === projectKey(query))) {
+    if (query && !out.some((c) => c.kind === "project" && projectKey(c.name) === projectKey(query))) {
       out.push({ kind: "create", name: query });
     }
     return out;
@@ -85,10 +81,15 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
   selectSuggestion(choice: Choice): void {
     const ctx = this.context;
     if (!ctx) return;
-    const after = ctx.editor.getRange(ctx.end, { line: ctx.end.line, ch: ctx.end.ch + 1 });
-    const text = `#[${choice.name}]` + (after === " " ? "" : " ");
-    ctx.editor.replaceRange(text, ctx.start, ctx.end);
-    ctx.editor.setCursor({ line: ctx.start.line, ch: ctx.start.ch + text.length + (after === " " ? 1 : 0) });
+    const { editor, start } = ctx;
+    // Replace through the closing `]` if there is one, so an auto-paired bracket doesn't leave a stray `]`.
+    const rest = editor.getLine(ctx.end.line).slice(ctx.end.ch);
+    const closeLen = CLOSE_RE.exec(rest)?.[0].length ?? 0;
+    const end = { line: ctx.end.line, ch: ctx.end.ch + closeLen };
+    const spaceAfter = rest.charAt(closeLen) === " ";
+    const text = `#[${choice.name}]` + (spaceAfter ? "" : " ");
+    editor.replaceRange(text, start, end);
+    editor.setCursor({ line: start.line, ch: start.ch + text.length + (spaceAfter ? 1 : 0) });
   }
 
   /** Active projects matching `query` (fuzzy), best first; all of them, Inbox first, for an empty query. */
