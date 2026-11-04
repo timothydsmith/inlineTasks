@@ -23,6 +23,12 @@ export interface PendingCreate {
   createdAt: number;
 }
 
+/**
+ * What this device knows about the sync. Each device keeps its own, in local storage, because the
+ * sync token, merge bases and in-flight creates are per device: sharing them through `data.json`
+ * (which Obsidian Sync copies between devices) let one device overwrite another's. Only
+ * `backfillDone` is shared, through `data.json`, since it records a choice made once per vault.
+ */
 export interface SyncState {
   syncToken: string | null;
   tasks: Record<string, TaskRecord>;

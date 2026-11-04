@@ -11,11 +11,16 @@ import { localEditTracker } from "./ui/localEdits";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { readingChipProcessor } from "./ui/readingChip";
 
+/** `data.json`, which Obsidian Sync shares between devices. Sync state is kept per device instead. */
 interface PluginData {
   settings: InlineTasksSettings;
-  state: SyncState;
+  backfillDone?: boolean;
+  /** Sync state, as saved by versions before it moved to per-device storage. Migrated on load. */
+  state?: SyncState;
 }
 
+/** Local-storage key (scoped to this vault by Obsidian) for this device's sync state. */
+const STATE_KEY = "inline-tasks-state";
 const PUSH_DEBOUNCE_MS = 3000;
 const DIRTY_RETRY_MS = 15000;
 const LOG_LINES = 400;
@@ -36,11 +41,25 @@ export default class InlineTasksPlugin extends Plugin {
   /** Last key press, click or tap in this window. */
   private lastInputAt = 0;
   private logLines: string[] = [];
+  /** backfillDone as last written to data.json, so data.json is only rewritten when it changes. */
+  private savedBackfill: boolean | undefined;
+  /** This device had no sync state of its own or to migrate: link the markers already in the vault. */
+  private freshState = false;
+  private storageWarned = false;
 
   async onload(): Promise<void> {
     const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
     this.settings = { ...DEFAULT_SETTINGS, ...data.settings };
-    this.state = { ...emptyState(), ...data.state };
+    const local = this.loadDeviceState();
+    this.freshState = !local && !data.state;
+    this.state = { ...emptyState(), ...(local ?? data.state) };
+    this.state.backfillDone = !!(data.backfillDone || data.state?.backfillDone || this.state.backfillDone);
+    this.savedBackfill = data.backfillDone;
+    if (!local) this.saveDeviceState();
+    // Drop the shared copy, so no device loads another's state from it again. (Never write data.json
+    // otherwise on load: on a new device, Sync may not have delivered it yet.)
+    if (data.state) await this.saveAll();
+    const migrated = !local && !!data.state;
 
     const http: HttpFn = async (req) => {
       const res = await requestUrl({ ...req, throw: false });
@@ -58,7 +77,7 @@ export default class InlineTasksPlugin extends Plugin {
       this.vaultAdapter(),
       this.state,
       () => ({ ...this.settings, canCreate: this.canCreate }),
-      () => this.saveAll(),
+      () => this.saveState(),
       (msg) => this.log(msg),
     );
 
@@ -122,6 +141,11 @@ export default class InlineTasksPlugin extends Plugin {
       this.registerEvent(this.app.vault.on("create", (f) => void this.onWrite(f)));
       this.schedulePull();
       this.log(`loaded on ${this.deviceName}; creates tasks: ${this.canCreate}, from elsewhere: ${this.createFromElsewhere}`);
+      if (migrated) this.log("moved sync state from data.json to this device");
+      if (this.freshState && this.state.backfillDone) {
+        const n = await this.engine.linkExisting();
+        this.log(`no sync state on this device; linked ${n} existing task(s)`);
+      }
       if (this.settings.apiToken) {
         await this.runPull();
         this.maybePromptBackfill();
@@ -134,8 +158,45 @@ export default class InlineTasksPlugin extends Plugin {
     if (this.pullTimer) window.clearInterval(this.pullTimer);
   }
 
+  /** Save settings (shared through data.json). */
   async saveAll(): Promise<void> {
-    await this.saveData({ settings: this.settings, state: this.state } satisfies PluginData);
+    await this.saveData({ settings: this.settings, backfillDone: this.state.backfillDone } satisfies PluginData);
+    this.savedBackfill = this.state.backfillDone;
+  }
+
+  /** Save this device's sync state; also data.json if the shared backfill flag changed. */
+  private async saveState(): Promise<void> {
+    this.saveDeviceState();
+    if (this.state.backfillDone !== this.savedBackfill) await this.saveAll();
+  }
+
+  /** Settings changed on another device (Obsidian Sync rewrote data.json). */
+  async onExternalSettingsChange(): Promise<void> {
+    const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
+    this.settings = { ...DEFAULT_SETTINGS, ...data.settings };
+    this.savedBackfill = data.backfillDone;
+    if (data.backfillDone && !this.state.backfillDone) {
+      this.state.backfillDone = true;
+      this.saveDeviceState();
+    }
+    this.schedulePull();
+  }
+
+  private loadDeviceState(): SyncState | null {
+    const raw: unknown = this.app.loadLocalStorage(STATE_KEY);
+    return raw && typeof raw === "object" ? (raw as SyncState) : null;
+  }
+
+  private saveDeviceState(): void {
+    try {
+      this.app.saveLocalStorage(STATE_KEY, this.state);
+    } catch (e) {
+      this.log(`error: couldn't save sync state: ${(e as Error).message}`);
+      if (!this.storageWarned) {
+        this.storageWarned = true;
+        new Notice(`Todoist sync: couldn't save sync state on this device (${(e as Error).message})`);
+      }
+    }
   }
 
   // ------------------------------------------------------------ per-device settings

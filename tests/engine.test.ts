@@ -392,6 +392,29 @@ describe("SyncEngine", () => {
     expect(engine.missingDetails()).toEqual([]);
   });
 
+  it("on a device with no sync state, links the markers already in the vault and fetches them", async () => {
+    vault.files.set("Note.md", "- [ ] Call Bob");
+    await engine.pushFile("Note.md");
+    todoist.edit("T1", { content: "Call Bob today", project_id: "P2" });
+    vault.files.set("Templates/T.md", "- [ ] template %%td:T1%%");
+    // A second device, starting empty.
+    const fresh = { ...emptyState(), backfillDone: true };
+    const other = new SyncEngine(new TodoistClient(() => "tok", todoist.http), vault, fresh, () => settings, async () => {});
+    expect(await other.linkExisting()).toBe(1); // excluded folders are skipped
+    expect(fresh.tasks.T1).toEqual({ path: "Note.md", base: { text: "Call Bob", checked: false, due: null } });
+    await other.pull();
+    expect(fresh.remote.T1?.projectId).toBe("P2");
+    expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob today %%td:T1%%"); // Todoist's edit merged in
+  });
+
+  it("knows a task it just created without fetching it", async () => {
+    await engine.pull();
+    vault.files.set("Note.md", "- [ ] Call Bob #[Work] 📅 2026-11-10");
+    await engine.pushFile("Note.md");
+    expect(state.remote.T1).toMatchObject({ projectId: "P2", due: "2026-11-10", checked: false });
+    expect(engine.missingDetails()).toEqual([]);
+  });
+
   it("does not keep full-syncing for a task Todoist no longer returns", async () => {
     vault.files.set("Note.md", "- [ ] gone %%td:T99%%");
     await engine.pushFile("Note.md");

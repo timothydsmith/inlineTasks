@@ -143,6 +143,28 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * Link every `%%td:<id>%%` marker in the vault that this device has no record of, using the line
+   * as the merge base. For a device starting without sync state (a new device, or cleared app
+   * data): the next pull then fetches the tasks' details, and any change made in Todoist since is
+   * merged into the line.
+   */
+  linkExisting(): Promise<number> {
+    return this.exclusive(async () => {
+      let n = 0;
+      for (const path of this.vault.markdownFiles()) {
+        if (!this.isFileEligible(path)) continue;
+        for (const { task } of findTasks(await this.vault.read(path))) {
+          if (!task.todoistId || this.state.tasks[task.todoistId]) continue;
+          this.state.tasks[task.todoistId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
+          n++;
+        }
+      }
+      if (n) await this.save();
+      return n;
+    });
+  }
+
   // ---------------------------------------------------------------- push
 
   pushFile(path: string, opts: PushOptions = {}): Promise<PushResult> {
@@ -328,6 +350,16 @@ export class SyncEngine {
     this.log(`${path}: sent ${commands.map((c) => c.type).join(", ")}`);
     const resolved = Object.entries(mapping).filter(([tmp]) => this.state.pending[tmp]);
     if (resolved.length) await this.resolvePending(path, resolved);
+    // Chip details for the new tasks, from what we sent, so they needn't be fetched.
+    const inbox = Object.entries(this.state.projects).find(([, p]) => p.inbox)?.[0];
+    for (const [tmp, realId] of resolved) {
+      const cmd = commands.find((c) => c.uuid === tmp && c.type === "item_add");
+      const pid = cmd?.args.project_id as string | undefined;
+      const projectId = pid ? (mapping[pid] ?? pid) : inbox;
+      if (!cmd || !projectId || !this.state.tasks[realId] || this.state.remote[realId]) continue;
+      const due = cmd.args.due as { date: string } | undefined;
+      this.state.remote[realId] = { projectId, priority: 1, due: due?.date ?? null, checked: false, labels: [] };
+    }
     if (stripRefs.size) await this.stripProjectRefs(path, stripRefs);
 
     await this.save();

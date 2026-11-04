@@ -134,7 +134,8 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 
 - Task text and due dates are sent to Todoist.
 - Each task's description gets an `obsidian://open` link that contains your vault name and the note's path.
-- Your API token is stored in plain text in `<vault>/.obsidian/plugins/inline-tasks/data.json`, along with the sync state. Don't commit that file or share your vault's `.obsidian` folder.
+- Your API token is stored in plain text in `<vault>/.obsidian/plugins/inline-tasks/data.json`, along with your settings. Don't commit that file or share your vault's `.obsidian` folder.
+- Each device keeps its own sync state (which tasks are linked, the last synced values, cached project names) in Obsidian's local storage for the vault, not in `data.json`, so devices sharing a vault through Obsidian Sync don't overwrite each other's. A device that starts with none, such as a new phone, links the `%%td:…%%` markers already in its notes and fetches their details from Todoist.
 
 ## Troubleshooting
 
