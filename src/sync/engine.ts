@@ -51,6 +51,8 @@ const BATCH = 90;
 
 export class SyncEngine {
   private busy: Promise<unknown> = Promise.resolve();
+  /** Task ids we've already run a full sync for, to fetch their details (see missingDetails). */
+  private fetchTried = new Set<string>();
 
   constructor(
     private client: TodoistClient,
@@ -370,11 +372,27 @@ export class SyncEngine {
     return this.exclusive(() => this.pullInner());
   }
 
+  /**
+   * Linked tasks this device has no Todoist details for (project, due date, ...), and hasn't yet
+   * tried to fetch. Happens when a task was created on another device: its marker arrives here by
+   * Obsidian Sync after this device's pulls have already gone past the task.
+   */
+  missingDetails(): string[] {
+    return Object.entries(this.state.tasks)
+      .filter(([id, rec]) => !rec.orphaned && !this.state.remote[id] && !this.fetchTried.has(id))
+      .map(([id]) => id);
+  }
+
   private async pullInner(): Promise<void> {
-    // Projects saved before archived/parent were tracked need one full sync to fill them in.
+    // Projects saved before archived/parent were tracked need one full sync to fill them in, and so
+    // do tasks we have no details for, since an incremental sync only returns tasks that changed.
     const stale = Object.values(this.state.projects).some((p) => p.parentId === undefined);
+    const missing = this.missingDetails();
+    // Tried once per session: a completed or deleted task isn't returned, and mustn't force a full sync every time.
+    for (const id of missing) this.fetchTried.add(id);
+    if (missing.length) this.log(`fetching details for ${missing.length} task(s) linked elsewhere`);
     const res = await this.client.sync({
-      syncToken: stale ? "*" : (this.state.syncToken ?? "*"),
+      syncToken: stale || missing.length ? "*" : (this.state.syncToken ?? "*"),
       resourceTypes: ["items", "projects"],
     });
 

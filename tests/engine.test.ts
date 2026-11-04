@@ -374,6 +374,34 @@ describe("SyncEngine", () => {
     expect(vault.files.get("Note.md")).toBe("- [ ] phone task");
   });
 
+  it("fetches details for a task created on another device, once", async () => {
+    // The other device created T1 in Work; this device's pulls are already past it.
+    vault.files.set("Phone.md", "- [ ] typed on the phone");
+    const phone = new SyncEngine(new TodoistClient(() => "tok", todoist.http), vault, { ...emptyState(), backfillDone: true }, () => settings, async () => {});
+    vault.fm.set("Phone.md", { todoist_project: "Work" });
+    await phone.pull();
+    await phone.pushFile("Phone.md");
+    expect(todoist.items.get("T1")!.project_id).toBe("P2");
+    await engine.pull();
+    expect(state.remote.T1).toBeUndefined(); // not tracked here yet, so skipped
+    // Its marker syncs across, and this device adopts it.
+    await engine.pushFile("Phone.md");
+    expect(engine.missingDetails()).toEqual(["T1"]);
+    await engine.pull();
+    expect(state.remote.T1?.projectId).toBe("P2");
+    expect(engine.missingDetails()).toEqual([]);
+  });
+
+  it("does not keep full-syncing for a task Todoist no longer returns", async () => {
+    vault.files.set("Note.md", "- [ ] gone %%td:T99%%");
+    await engine.pushFile("Note.md");
+    await engine.pull();
+    const before = todoist.calls.length;
+    expect(engine.missingDetails()).toEqual([]);
+    await engine.pull();
+    expect(todoist.calls.length).toBe(before + 1);
+  });
+
   it("with noCreate, updates existing tasks but creates none (a change synced in from elsewhere)", async () => {
     vault.files.set("Note.md", "- [ ] Call Bob");
     await engine.pushFile("Note.md");

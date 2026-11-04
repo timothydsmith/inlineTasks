@@ -240,7 +240,10 @@ export default class InlineTasksPlugin extends Plugin {
       if (res?.deferred) this.log(`${path}: deferred (being edited)`);
       if (!res || res.deferred) this.dirty.add(path);
     }
-    this.refresh();
+    // A task linked on another device arrived here: fetch its project and due date for the chip now,
+    // rather than at the next scheduled pull.
+    if (this.engine.missingDetails().length) await this.runPull();
+    else this.refresh();
   }
 
   private async runPull(notify = false): Promise<void> {
