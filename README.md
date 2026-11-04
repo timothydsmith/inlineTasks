@@ -10,7 +10,7 @@ renders as
 
 > ☐ Call Bob about the contract `■ #Work  Nov 10  P1`
 
-**Status:** pre-release (0.1.0). Tested on Obsidian desktop (Windows) against the live Todoist API. Not yet tested on mobile. See [CHANGELOG.md](CHANGELOG.md).
+**Status:** pre-release (0.1.0). Tested against the live Todoist API on Obsidian desktop (Windows) and Android, with Obsidian Sync between them. Not yet tested on iOS. See [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
@@ -31,6 +31,7 @@ renders as
   - Set `todoist_project: Work` in a note's frontmatter.
 - **When sync runs:**
   - Pushes happen a few seconds after you stop typing, once Obsidian has saved the note. A new task on the line you're still editing is held back until you move off it. **Sync now** and **Sync current note** save the note first and push straight away.
+  - Changes that arrive from another device or app are pushed after a 2-minute wait (see [Multiple devices](#multiple-devices-obsidian-sync)).
   - Pulls happen every 5 minutes, whenever Obsidian regains focus, and on **Sync now**.
 
 ### What the chip shows
@@ -78,10 +79,16 @@ After you add your API token, a **backfill preview** shows how many existing ope
 When you later remove an exclusion, checkboxes in that folder aren't picked up until each note is edited. Run **Review backfill of existing checkboxes** to sync them all at once.
 
 ### Multiple devices (Obsidian Sync)
-Creation is crash- and retry-safe:
+Each device pushes the changes made on it:
+- **Typed here:** a change made in this device's editor is pushed within seconds.
+- **Arrived from elsewhere:** a change delivered by Obsidian Sync, OneDrive or another app is pushed only after the note has been unchanged for 2 minutes. By then the device you typed on has usually created the task, and its marker has synced across, so nothing is created twice and half-typed lines from the other device are never created.
+- **Written by a script or agent:** notes written directly to disk count as arriving from elsewhere, so their tasks appear in Todoist about 2 minutes later.
+
+Creation is also crash- and retry-safe:
 1. A pending marker `%%td:new-<uuid>%%` is written to the note before the task is sent.
 2. The same uuid is used as the Todoist command id, so Todoist de-duplicates a retried create.
-3. If you still see duplicates, turn off **This device creates tasks** on secondary devices. That setting is stored per device.
+
+If you still see duplicates, for example from editing the same note on two devices at once, turn off **This device creates tasks** on secondary devices. That setting is stored per device.
 
 ## Install
 

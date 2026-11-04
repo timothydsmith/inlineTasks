@@ -20,8 +20,9 @@ First release, planned as 0.1.0.
 - Typing `#[` on a checkbox line opens a menu of Todoist projects to pick from, or offers to create a new one. Ordinary `#tags` keep Obsidian's tag suggestions.
 - First-run backfill preview, grouped by folder. Sync stays paused until you confirm.
 - Nothing is ever deleted: removing a line unlinks the task, and a task deleted in Todoist shows as a struck-through chip.
-- Per-device **This device creates tasks** setting, for Obsidian Sync setups.
+- Multi-device safety with Obsidian Sync: each device pushes changes typed in its own editor straight away, and waits 2 minutes before pushing changes that arrived from another device or app. This stops duplicate tasks, and half-typed lines from another device being created.
+- Per-device **This device creates tasks** setting, as a fallback for Obsidian Sync setups.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**.
-- Built for mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Mobile is not yet tested.
+- Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
 [Unreleased]: https://github.com/timothydsmith/inlineTasks/commits/dev

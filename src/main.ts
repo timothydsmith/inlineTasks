@@ -2,10 +2,12 @@ import { EditorView } from "@codemirror/view";
 import { MarkdownView, Notice, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { SyncEngine, type VaultAdapter } from "./sync/engine";
+import { holdForOtherDevice } from "./sync/origin";
 import { emptyState, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
+import { localEditTracker } from "./ui/localEdits";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { readingChipProcessor } from "./ui/readingChip";
 
@@ -28,6 +30,8 @@ export default class InlineTasksPlugin extends Plugin {
   private chipVersion = 0;
   private lastErrorAt = 0;
   private backfillPrompted = false;
+  /** When each note was last edited in this device's editor (see sync/origin.ts). */
+  private lastLocalEdit = new Map<string, number>();
 
   async onload(): Promise<void> {
     const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
@@ -56,11 +60,18 @@ export default class InlineTasksPlugin extends Plugin {
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion));
+    this.registerEditorExtension(localEditTracker((path) => this.lastLocalEdit.set(path, Date.now())));
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state));
     this.registerProjectSuggest();
 
     this.registerEvent(this.app.vault.on("modify", (f) => this.markDirty(f)));
-    this.registerEvent(this.app.vault.on("rename", (f, old) => this.engine.onRename(old, f.path)));
+    this.registerEvent(
+      this.app.vault.on("rename", (f, old) => {
+        const t = this.lastLocalEdit.get(old);
+        if (t !== undefined) this.lastLocalEdit.set(f.path, t);
+        this.engine.onRename(old, f.path);
+      }),
+    );
     this.registerEvent(this.app.vault.on("delete", (f) => this.engine.onDelete(f.path)));
     this.registerDomEvent(window, "focus", () => void this.runPull());
     this.registerInterval(window.setInterval(() => this.dirty.size && void this.flush(), DIRTY_RETRY_MS));
@@ -153,7 +164,13 @@ export default class InlineTasksPlugin extends Plugin {
     const paths = [...this.dirty];
     this.dirty.clear();
     for (const path of paths) {
-      if (!(this.app.vault.getAbstractFileByPath(path) instanceof TFile)) continue;
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      // Changed on another device (or by another app): let that device push it first.
+      if (!force && holdForOtherDevice(this.lastLocalEdit.get(path), file.stat.mtime, Date.now())) {
+        this.dirty.add(path);
+        continue;
+      }
       const editor = force ? undefined : () => this.openEditor(path);
       const res = await this.guard(() => this.engine.pushFile(path, { editor }));
       if (!res || res.deferred) this.dirty.add(path);
@@ -242,7 +259,12 @@ export default class InlineTasksPlugin extends Plugin {
     return {
       read: (p) => vault.read(file(p)),
       process: async (p, fn) => {
-        await vault.process(file(p), fn);
+        const f = file(p);
+        // Our own write bumps mtime. Keep the note's origin as it was: if it counted as edited
+        // here (or had gone quiet), it still does, rather than looking like a change from elsewhere.
+        const local = !holdForOtherDevice(this.lastLocalEdit.get(p), f.stat.mtime, Date.now());
+        await vault.process(f, fn);
+        if (local) this.lastLocalEdit.set(p, Date.now());
       },
       mtime: (p) => file(p).stat.mtime,
       frontmatter: (p) => {
