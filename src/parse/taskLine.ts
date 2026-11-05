@@ -10,6 +10,8 @@
  * - `#notodoist`       opt this line out of syncing.
  * - `#[Project name]`  file the task in that Todoist project (created if missing).
  *                      Stripped from the line once Todoist has applied it; the chip shows the project.
+ * - `@label`, `@[Label name]`  add that Todoist label to the task (created if missing). Stripped
+ *                      once applied, like a project reference; the chip shows the task's labels.
  */
 
 export interface TaskFields {
@@ -30,6 +32,8 @@ export interface ParsedTask extends TaskFields {
   excluded: boolean;
   /** Project named by a `#[Project name]` reference on the line, or null. The last one wins. */
   projectRef: string | null;
+  /** Labels named by `@label` / `@[Label name]` references on the line, in order, without duplicates. */
+  labelRefs: string[];
 }
 
 const CHECKBOX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)\[(.)\]\s?(.*)$/;
@@ -39,6 +43,13 @@ const DUE_RE = /\s*📅\s*(\d{4}-\d{2}-\d{2})/;
 const DUE_RE_G = /\s*📅\s*\d{4}-\d{2}-\d{2}/g;
 const OPT_OUT_RE = /(^|\s)#notodoist(\s|$)/;
 const PROJECT_RE_G = /(^|\s)#\[([^\]\n]*)\]/g;
+/**
+ * `@[Any name]`, or `@name` without spaces or brackets. A bare name can't end in punctuation, so
+ * "call @Sarah." keeps its full stop. Only at line start or after a space, so emails don't match.
+ */
+const LABEL_RE_G = /(^|\s)@(?:\[([^\]\n]*)\]|([^\s@[\]#()]*[^\s@[\]#().,;:!?'"]))/g;
+/** Names that must be written in the bracketed form. */
+const LABEL_NEEDS_BRACKETS = /[\s@[\]#()]|[.,;:!?'"]$/;
 const PENDING_PREFIX = "new-";
 
 export function parseTaskLine(line: string): ParsedTask | null {
@@ -52,11 +63,17 @@ export function parseTaskLine(line: string): ParsedTask | null {
 
   let projectRef: string | null = null;
   for (const p of rest.matchAll(PROJECT_RE_G)) projectRef = p[2].trim() || projectRef;
+  const labelRefs: string[] = [];
+  for (const l of rest.matchAll(LABEL_RE_G)) {
+    const name = (l[2] ?? l[3]).trim();
+    if (name && !labelRefs.some((x) => x.toLowerCase() === name.toLowerCase())) labelRefs.push(name);
+  }
 
   const text = rest
     .replace(MARKER_RE_G, "")
     .replace(DUE_RE_G, "")
     .replace(PROJECT_RE_G, "$1")
+    .replace(LABEL_RE_G, "$1")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -70,6 +87,7 @@ export function parseTaskLine(line: string): ParsedTask | null {
     pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
     excluded: OPT_OUT_RE.test(text) || text.length === 0,
     projectRef,
+    labelRefs,
   };
 }
 
@@ -83,11 +101,17 @@ export function markerFor(task: Pick<ParsedTask, "todoistId" | "pendingUuid">): 
 export function serializeTask(task: ParsedTask): string {
   const status = task.checked ? (task.status !== " " ? task.status : "x") : " ";
   let out = `${task.prefix}[${status}] ${task.text}`;
+  for (const l of task.labelRefs) out += ` ${labelRef(l)}`;
   if (task.projectRef) out += ` #[${task.projectRef}]`;
   if (task.due) out += ` 📅 ${task.due}`;
   const marker = markerFor(task);
   if (marker) out += ` ${marker}`;
   return out;
+}
+
+/** How a label is written on a line: `@name`, or `@[Label name]` when the name needs it. */
+export function labelRef(name: string): string {
+  return LABEL_NEEDS_BRACKETS.test(name) ? `@[${name}]` : `@${name}`;
 }
 
 export interface TaskLocation {

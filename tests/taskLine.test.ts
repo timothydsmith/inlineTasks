@@ -38,6 +38,16 @@ describe("parseTaskLine", () => {
     expect(parseTaskLine("- [ ] #[Work]")!.excluded).toBe(true); // nothing to create
   });
 
+  it("extracts @label references from the text", () => {
+    const t = parseTaskLine("- [ ] Ask @person:Sarah about @[Waiting For] it @context:Home. @phonecall @PhoneCall")!;
+    expect(t.labelRefs).toEqual(["person:Sarah", "Waiting For", "context:Home", "phonecall"]); // de-duplicated
+    expect(t.text).toBe("Ask about it ."); // a trailing full stop isn't part of a bare label
+    expect(parseTaskLine("- [ ] Email bob@example.com")!.labelRefs).toEqual([]);
+    expect(parseTaskLine("- [ ] Meet @ 5pm")!.labelRefs).toEqual([]);
+    expect(parseTaskLine("- [ ] WhatsApp/SMS @WhatsApp/SMS")!.labelRefs).toEqual(["WhatsApp/SMS"]);
+    expect(parseTaskLine("- [ ] @PhoneCall")!.excluded).toBe(true); // nothing to create
+  });
+
   it("ignores non-task lines", () => {
     expect(parseTaskLine("- just a bullet")).toBeNull();
     expect(parseTaskLine("[ ] no list marker")).toBeNull();
@@ -59,6 +69,12 @@ describe("serializeTask", () => {
     const t = parseTaskLine("- [ ] Call #[Work] Bob 📅 2026-11-10 %%td:abc%%")!;
     expect(serializeTask(t)).toBe("- [ ] Call Bob #[Work] 📅 2026-11-10 %%td:abc%%");
     expect(serializeTask({ ...t, projectRef: null })).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:abc%%");
+  });
+
+  it("writes labels after the text, bracketing names that need it", () => {
+    const t = parseTaskLine("- [ ] Call @[Waiting For] Bob #[Work] @PhoneCall 📅 2026-11-10")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob @[Waiting For] @PhoneCall #[Work] 📅 2026-11-10");
+    expect(serializeTask({ ...t, labelRefs: ["done."] })).toBe("- [ ] Call Bob @[done.] #[Work] 📅 2026-11-10");
   });
 
   it("preserves custom checked statuses but unchecks to space", () => {

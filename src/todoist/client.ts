@@ -42,6 +42,13 @@ export interface TodoistProject {
   parent_id?: string | null;
 }
 
+export interface TodoistLabel {
+  id: string;
+  name: string;
+  item_order?: number;
+  is_deleted?: boolean;
+}
+
 export interface Command {
   type: string;
   uuid: string;
@@ -54,7 +61,8 @@ export interface SyncResponse {
   full_sync: boolean;
   items?: TodoistItem[];
   projects?: TodoistProject[];
-  sync_status?: Record<string, "ok" | { error: string; error_code?: number }>;
+  labels?: TodoistLabel[];
+  sync_status?: Record<string, "ok" | { error: string; error_code?: number; error_extra?: Record<string, unknown> }>;
   temp_id_mapping?: Record<string, string>;
 }
 

@@ -41,6 +41,10 @@ export interface SyncState {
    * brings the project in or proves it was never created; the pull then clears this map.
    */
   pendingProjects: Record<string, string>;
+  /** The user's personal Todoist labels, by id. */
+  labels: Record<string, LabelInfo>;
+  /** True once a full sync has filled in `labels` (state saved before labels were tracked lacks them). */
+  labelsSynced?: boolean;
   /** True once the user has confirmed the initial backfill of existing checkboxes. */
   backfillDone: boolean;
 }
@@ -53,6 +57,11 @@ export interface ProjectInfo {
   parentId?: string | null;
 }
 
+export interface LabelInfo {
+  name: string;
+  order?: number;
+}
+
 export function emptyState(): SyncState {
-  return { syncToken: null, tasks: {}, pending: {}, remote: {}, projects: {}, pendingProjects: {}, backfillDone: false };
+  return { syncToken: null, tasks: {}, pending: {}, remote: {}, projects: {}, pendingProjects: {}, labels: {}, backfillDone: false };
 }

@@ -64,6 +64,23 @@ When the task next syncs, it's filed in that project and the reference is remove
 - **Precedence:** a reference beats folder mappings and `todoist_project:` frontmatter.
 - **Ordinary tags are unaffected.** Only `#[` opens the project menu, so `#tags` get Obsidian's usual tag suggestions and never file a task.
 
+### Adding labels
+
+Type `@` on a checkbox line to open a menu of your Todoist labels, then keep typing to filter. Picking one inserts a label reference. Names with spaces or punctuation are bracketed:
+
+```markdown
+- [ ] Ring the plumber @PhoneCall @[Waiting For]
+```
+
+When the task next syncs, the labels are added to it and the references are removed from the line. The chip shows the task's labels from then on.
+
+- **Adding only:** references add labels and never remove any. Remove a label in Todoist.
+- **Label doesn't exist:** keep typing the new name, and the menu offers **Create label “…”**. A reference you type by hand to a missing label also creates it.
+- **Matching** ignores case and extra spaces, and uses the label's own spelling in Todoist.
+- **Where `@` counts:** only at the start of the line or after a space, so `bob@example.com` is left alone. A bare `@name` stops at a space and doesn't include a trailing full stop or comma. Use `@[…]` for anything else.
+- **Timing:** like project references, labels are applied once you move off the line, or straight away with **Sync now**. A task linked on another device waits until this device has fetched its current labels, so none are dropped.
+- **Mentions:** any `@word` on a synced checkbox line becomes a label, so write `at Sarah's` rather than `@Sarah` unless you mean the label.
+
 ### Excluding things
 - **Folders or notes** listed in settings (defaults to `Templates`). An entry matches a folder and everything inside it, or a single note by its path, e.g. `Journal/Private.md`.
 - **A whole note:** `todoist: false` in its frontmatter.
@@ -151,7 +168,8 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Due times:** a time set in Todoist is shown as a date only. Changing the date in Obsidian replaces the due date with a date-only one, so the time is lost.
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used.
-- **Not yet supported:** nested checkboxes as subtasks, editing priority or labels inline, and Todoist query blocks.
+- **Labels:** can be added from a note but not removed. If a label is added in Todoist after this device last pulled and before an `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short.
+- **Not yet supported:** nested checkboxes as subtasks, editing priority inline, and Todoist query blocks.
 
 ## Development
 
