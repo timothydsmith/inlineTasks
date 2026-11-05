@@ -15,6 +15,10 @@ class FakeTodoist {
     { id: "P2", name: "Work", seq: 0 },
     { id: "PA", name: "Old", is_archived: true, seq: 0 },
   ];
+  labels: { id: string; name: string; seq: number }[] = [
+    { id: "L1", name: "Waiting For", seq: 0 },
+    { id: "L2", name: "PhoneCall", seq: 0 },
+  ];
 
   http = async (req: HttpRequest) => {
     const form = new URLSearchParams(req.body);
@@ -28,7 +32,9 @@ class FakeTodoist {
       this.seenUuids.add(c.uuid);
       const a = c.args as Record<string, any>;
       if (typeof a.project_id === "string" && temp_id_mapping[a.project_id]) a.project_id = temp_id_mapping[a.project_id];
-      if (c.type === "project_add") {
+      if (c.type === "label_add") {
+        this.labels.push({ id: `LX${this.labels.length}`, name: a.name, seq: ++this.seq });
+      } else if (c.type === "project_add") {
         const id = `PX${this.projects.length}`;
         this.projects.push({ id, name: a.name, seq: ++this.seq });
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
@@ -36,7 +42,7 @@ class FakeTodoist {
         const id = `T${this.nextId++}`;
         this.items.set(id, {
           id, content: a.content, description: a.description, project_id: a.project_id ?? "inbox",
-          checked: false, is_deleted: false, priority: 1, due: a.due ?? null, seq: ++this.seq,
+          checked: false, is_deleted: false, priority: 1, due: a.due ?? null, labels: a.labels ?? [], seq: ++this.seq,
         });
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
       } else {
@@ -44,6 +50,7 @@ class FakeTodoist {
         if (c.type === "item_update") {
           if ("content" in a) it.content = a.content;
           if ("due" in a) it.due = a.due;
+          if ("labels" in a) it.labels = a.labels;
         } else if (c.type === "item_close") it.checked = true;
         else if (c.type === "item_uncomplete") it.checked = false;
         else if (c.type === "item_move") it.project_id = a.project_id;
@@ -62,6 +69,7 @@ class FakeTodoist {
       json: {
         sync_token: String(this.seq), full_sync: full, items,
         projects: this.projects.filter((p) => full || p.seq > Number(form.get("sync_token"))),
+        labels: this.labels.filter((l) => full || l.seq > Number(form.get("sync_token"))),
         sync_status, temp_id_mapping,
       },
     };
@@ -363,6 +371,59 @@ describe("SyncEngine", () => {
       await engine.pushFile("Note.md");
       expect(todoist.projects.some((p) => p.name === "Garden")).toBe(false);
       expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob #[Garden] %%td:T1%%");
+    });
+  });
+
+  describe("@label references", () => {
+    beforeEach(() => engine.pull());
+
+    it("creates a task with its labels, using Todoist's spelling, and strips them", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob @phonecall @[waiting for] 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")).toMatchObject({ content: "Call Bob", labels: ["PhoneCall", "Waiting For"] });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      expect(state.remote.T1.labels).toEqual(["PhoneCall", "Waiting For"]);
+    });
+
+    it("creates a missing label once, even when two lines name it", async () => {
+      vault.files.set("Note.md", "- [ ] one @Errands\n- [ ] two @errands");
+      await engine.pushFile("Note.md");
+      expect(todoist.labels.filter((l) => l.name.toLowerCase() === "errands")).toHaveLength(1);
+      expect(todoist.items.get("T2")!.labels).toEqual(["Errands"]);
+      await engine.pull();
+      expect(Object.values(state.labels).filter((l) => l.name === "Errands")).toHaveLength(1);
+    });
+
+    it("adds labels to a synced task without dropping the ones it has", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      todoist.edit("T1", { labels: ["PhoneCall"] });
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob @[Waiting For] %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.labels).toEqual(["PhoneCall", "Waiting For"]);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+
+    it("waits while the line is being edited, or until the task's labels are known", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", "- [ ] Call Bob @PhoneCall %%td:T1%%");
+      expect((await engine.pushFile("Note.md", { skipLine: 0 })).deferred).toBe(true);
+      delete state.remote.T1;
+      expect((await engine.pushFile("Note.md")).deferred).toBe(true);
+      expect(todoist.items.get("T1")!.labels).toEqual([]);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob @PhoneCall %%td:T1%%");
+    });
+
+    it("does not create labels on a device with creation disabled", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      settings.canCreate = false;
+      vault.files.set("Note.md", "- [ ] Call Bob @Brand-new %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.labels.some((l) => l.name === "Brand-new")).toBe(false);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob @Brand-new %%td:T1%%");
     });
   });
 

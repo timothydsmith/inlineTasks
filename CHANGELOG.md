@@ -7,6 +7,10 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+### Added
+- `@label` or `@[Label name]` on a checkbox line adds that Todoist label to the task, on create or later. A missing label is created. The reference is removed from the line once applied, since the chip shows the labels.
+- Typing `@` on a checkbox line opens a menu of your Todoist labels to pick from, or offers to create a new one.
+
 ## [0.1.0] - 2026-11-04
 
 First release. Needs Obsidian 1.8.7 or later.

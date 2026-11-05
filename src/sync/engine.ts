@@ -108,6 +108,12 @@ export class SyncEngine {
     return id;
   }
 
+  /** The existing label with this name (its own spelling), ignoring case and surrounding spaces. */
+  findLabel(name: string): string | undefined {
+    const key = labelKey(name);
+    return Object.values(this.state.labels).find((l) => labelKey(l.name) === key)?.name;
+  }
+
   /** Id of the active (non-archived) project with this name, ignoring case and surrounding spaces. */
   findProject(name: string): string | undefined {
     const key = projectKey(name);
@@ -215,7 +221,7 @@ export class SyncEngine {
     const onOk: Record<string, () => void> = {};
     const seenIds = new Set<string>();
     /** Real task ids whose `#[Project]` reference should be removed from the line. */
-    const stripRefs = new Set<string>();
+    const stripProjects = new Set<string>();
     /** Projects created by this push: temp id → lower-cased name. */
     const newProjects = new Map<string, string>();
 
@@ -239,6 +245,39 @@ export class SyncEngine {
       return tmp;
     };
 
+    /** Real task ids → the `@labels` to remove from their line, once applied. */
+    const stripLabels = new Map<string, string[]>();
+    /** Labels created by this push: key → name as created. */
+    const newLabels = new Map<string, string>();
+    /**
+     * Todoist names for `@label` references (an existing label's own spelling), queueing a
+     * `label_add` for each new one. Undefined if a label is new and this device may not create.
+     */
+    const labelNames = (refs: string[]): string[] | undefined => {
+      const out: string[] = [];
+      for (const ref of refs) {
+        const existing = this.findLabel(ref);
+        if (existing) {
+          out.push(existing);
+          continue;
+        }
+        const key = labelKey(ref);
+        const name = newLabels.get(key) ?? ref.trim().replace(/\s+/g, " ");
+        if (!newLabels.has(key)) {
+          if (!canCreate) return undefined; // hold; a device that may create will apply it
+          newLabels.set(key, name);
+          const tmp = makeUuid();
+          const cmd: Command = { type: "label_add", uuid: tmp, temp_id: tmp, args: { name } };
+          commands.push(cmd);
+          // Known from now on, so a retry or the next line doesn't create it again. The next pull
+          // replaces this entry with the real one.
+          onOk[cmd.uuid] = () => (this.state.labels[`${NEW_LABEL}${key}`] = { name });
+        }
+        out.push(name);
+      }
+      return out;
+    };
+
     for (const { line, task } of tasks) {
       const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
 
@@ -253,6 +292,11 @@ export class SyncEngine {
         const projectId = task.projectRef ? projectTarget(task.projectRef) : this.projectIdFor(path);
         if (task.projectRef && !projectId) continue; // project can't be created on this device
         if (projectId) args.project_id = projectId;
+        if (task.labelRefs.length) {
+          const labels = labelNames(task.labelRefs);
+          if (!labels) continue; // a label can't be created on this device
+          args.labels = labels;
+        }
         if (task.due) args.due = { date: task.due };
         // Same uuid on retry: Todoist de-duplicates commands it has already applied.
         commands.push({ type: "item_add", uuid: task.pendingUuid, temp_id: task.pendingUuid, args });
@@ -279,11 +323,37 @@ export class SyncEngine {
         } else {
           const target = projectTarget(task.projectRef);
           if (target && target === this.state.remote[id]?.projectId) {
-            stripRefs.add(id); // already there
+            stripProjects.add(id); // already there
           } else if (target) {
             const cmd: Command = { type: "item_move", uuid: makeUuid(), args: { id, project_id: target } };
             commands.push(cmd);
-            onOk[cmd.uuid] = () => stripRefs.add(id);
+            onOk[cmd.uuid] = () => stripProjects.add(id);
+          }
+        }
+      }
+      // `@labels` on a synced task: add them to its labels, then strip them. Todoist only takes the
+      // whole list, so this needs the task's current labels; without them, sending would drop some.
+      const meta = this.state.remote[id];
+      if (task.labelRefs.length) {
+        if (line === opts.skipLine || !meta) {
+          deferred = true; // being edited, or details not fetched yet (the next pull fetches them)
+        } else {
+          const names = labelNames(task.labelRefs);
+          if (names) {
+            const current = meta.labels ?? [];
+            const merged = [...current];
+            for (const n of names) if (!merged.some((c) => labelKey(c) === labelKey(n))) merged.push(n);
+            const refs = task.labelRefs;
+            if (merged.length === current.length) {
+              stripLabels.set(id, refs); // already has them
+            } else {
+              const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, labels: merged } };
+              commands.push(cmd);
+              onOk[cmd.uuid] = () => {
+                meta.labels = merged;
+                stripLabels.set(id, refs);
+              };
+            }
           }
         }
       }
@@ -307,7 +377,7 @@ export class SyncEngine {
     }
 
     if (!commands.length) {
-      if (stripRefs.size) await this.stripProjectRefs(path, stripRefs);
+      await this.stripRefs(path, stripProjects, stripLabels);
       await this.save();
       return { deferred };
     }
@@ -327,7 +397,10 @@ export class SyncEngine {
       for (const cmd of batch) {
         const status = res.sync_status?.[cmd.uuid];
         if (status === "ok") onOk[cmd.uuid]?.();
-        else if (status) this.log(`Todoist rejected ${cmd.type}: ${status.error}`);
+        else if (status) {
+          const extra = status.error_extra ? ` ${JSON.stringify(status.error_extra)}` : "";
+          this.log(`Todoist rejected ${cmd.type} ${JSON.stringify(cmd.args)}: ${status.error}${extra}`);
+        }
       }
     }
 
@@ -340,7 +413,7 @@ export class SyncEngine {
       delete this.state.pendingProjects[key];
     }
     for (const cmd of commands) {
-      if (cmd.type !== "item_move" || !stripRefs.has(cmd.args.id as string)) continue;
+      if (cmd.type !== "item_move" || !stripProjects.has(cmd.args.id as string)) continue;
       const meta = this.state.remote[cmd.args.id as string];
       const pid = cmd.args.project_id as string;
       if (meta) meta.projectId = mapping[pid] ?? pid;
@@ -358,23 +431,33 @@ export class SyncEngine {
       const projectId = pid ? (mapping[pid] ?? pid) : inbox;
       if (!cmd || !projectId || !this.state.tasks[realId] || this.state.remote[realId]) continue;
       const due = cmd.args.due as { date: string } | undefined;
-      this.state.remote[realId] = { projectId, priority: 1, due: due?.date ?? null, checked: false, labels: [] };
+      const labels = (cmd.args.labels as string[] | undefined) ?? [];
+      this.state.remote[realId] = { projectId, priority: 1, due: due?.date ?? null, checked: false, labels };
     }
-    if (stripRefs.size) await this.stripProjectRefs(path, stripRefs);
+    await this.stripRefs(path, stripProjects, stripLabels);
 
     await this.save();
     return { deferred };
   }
 
-  private async stripProjectRefs(path: string, ids: Set<string>): Promise<void> {
+  /**
+   * Remove applied references from synced lines: `#[Project]` for the ids in `projects`, and the
+   * named `@labels` for each id in `labels` (only those, in case another was typed meanwhile).
+   */
+  private async stripRefs(path: string, projects: Set<string>, labels: Map<string, string[]>): Promise<void> {
+    if (!projects.size && !labels.size) return;
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
       let changed = false;
-      for (const id of ids) {
+      for (const id of new Set([...projects, ...labels.keys()])) {
         const idx = findLineByMarker(lines, id);
         const task = idx >= 0 ? parseTaskLine(lines[idx]) : null;
-        if (!task?.projectRef) continue;
-        lines[idx] = serializeTask({ ...task, projectRef: null });
+        if (!task) continue;
+        const applied = new Set((labels.get(id) ?? []).map(labelKey));
+        const labelRefs = task.labelRefs.filter((l) => !applied.has(labelKey(l)));
+        const projectRef = projects.has(id) ? null : task.projectRef;
+        if (projectRef === task.projectRef && labelRefs.length === task.labelRefs.length) continue;
+        lines[idx] = serializeTask({ ...task, projectRef, labelRefs });
         changed = true;
       }
       return changed ? lines.join("\n") : content;
@@ -390,8 +473,8 @@ export class SyncEngine {
         if (idx < 0) continue;
         const task = parseTaskLine(lines[idx]);
         if (!task) continue;
-        // The create carried the line's `#[Project]`, so the reference has done its job.
-        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId, projectRef: null });
+        // The create carried the line's `#[Project]` and `@labels`, so the references have done their job.
+        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [] });
         this.state.tasks[realId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
       }
       return lines.join("\n");
@@ -418,17 +501,28 @@ export class SyncEngine {
   private async pullInner(): Promise<void> {
     // Projects saved before archived/parent were tracked need one full sync to fill them in, and so
     // do tasks we have no details for, since an incremental sync only returns tasks that changed.
-    const stale = Object.values(this.state.projects).some((p) => p.parentId === undefined);
+    const stale =
+      Object.values(this.state.projects).some((p) => p.parentId === undefined) || !this.state.labelsSynced;
     const missing = this.missingDetails();
     // Tried once per session: a completed or deleted task isn't returned, and mustn't force a full sync every time.
     for (const id of missing) this.fetchTried.add(id);
     if (missing.length) this.log(`fetching details for ${missing.length} task(s) linked elsewhere`);
     const res = await this.client.sync({
       syncToken: stale || missing.length ? "*" : (this.state.syncToken ?? "*"),
-      resourceTypes: ["items", "projects"],
+      resourceTypes: ["items", "projects", "labels"],
     });
 
-    if (res.full_sync) this.state.projects = {};
+    if (res.full_sync) {
+      this.state.projects = {};
+      this.state.labels = {};
+      this.state.labelsSynced = true;
+    }
+    for (const l of res.labels ?? []) {
+      if (l.is_deleted) delete this.state.labels[l.id];
+      else this.state.labels[l.id] = { name: l.name, order: l.item_order };
+    }
+    // Labels this device just created are now known by their real id (or turned out not to exist).
+    for (const id of Object.keys(this.state.labels)) if (id.startsWith(NEW_LABEL)) delete this.state.labels[id];
     const deletedProjects = new Set<string>();
     for (const p of res.projects ?? []) {
       if (p.is_deleted) {
@@ -561,6 +655,12 @@ export class SyncEngine {
 export function projectKey(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLowerCase();
 }
+
+/** Labels match like projects: ignoring case and extra spaces. */
+export const labelKey = projectKey;
+
+/** Key prefix for labels created by this device that no pull has confirmed yet. */
+const NEW_LABEL = "new:";
 
 function pickFields(src: TaskFields, keys: Partial<TaskFields>): Partial<TaskFields> {
   const out: Partial<TaskFields> = {};

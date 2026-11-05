@@ -8,6 +8,7 @@ import { TodoistClient, TodoistError, type HttpFn } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
 import { localEditTracker } from "./ui/localEdits";
+import { LabelSuggest } from "./ui/labelSuggest";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { readingChipProcessor } from "./ui/readingChip";
 
@@ -94,7 +95,7 @@ export default class InlineTasksPlugin extends Plugin {
       this.registerDomEvent(document, type, () => (this.lastInputAt = Date.now()), { capture: true });
     }
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state));
-    this.registerProjectSuggest();
+    this.registerSuggests();
 
     this.registerEvent(this.app.vault.on("modify", (f) => void this.onWrite(f)));
     this.registerEvent(
@@ -231,13 +232,12 @@ export default class InlineTasksPlugin extends Plugin {
     return Platform.isMobile ? (Platform.isAndroidApp ? "android" : Platform.isIosApp ? "ios" : "mobile") : "desktop";
   }
 
-  private registerProjectSuggest(): void {
-    const suggest = new ProjectSuggest(
-      this.app,
-      () => this.state,
-      (file) => !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path),
-    );
-    this.registerEditorSuggest(suggest);
+  /** The `#[` project picker and the `@` label picker. */
+  private registerSuggests(): void {
+    const enabled = (file: TFile | null) =>
+      !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path);
+    this.registerEditorSuggest(new ProjectSuggest(this.app, () => this.state, enabled));
+    this.registerEditorSuggest(new LabelSuggest(this.app, () => this.state, enabled));
   }
 
   // ------------------------------------------------------------ log
