@@ -7,6 +7,8 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
 ### Added
 - `@label` or `@[Label name]` on a checkbox line adds that Todoist label to the task, on create or later. A missing label is created. The reference is removed from the line once applied, since the chip shows the labels.
 - Typing `@` on a checkbox line opens a menu of your Todoist labels to pick from, or offers to create a new one.
@@ -33,5 +35,6 @@ First release. Needs Obsidian 1.8.7 or later.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
-[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.1.0...dev
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.2.0...dev
+[0.2.0]: https://github.com/timothydsmith/inlineTasks/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/timothydsmith/inlineTasks/releases/tag/0.1.0
