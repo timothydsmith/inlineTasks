@@ -7,6 +7,13 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+### Added
+- Tasks plugin fields stay on the line and out of the Todoist title: `⏳ 🛫 ➕ ✅ ❌` dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔`, `🏁`, and a `^block-link` at the end. Tasks' other spellings of the due date, `📆` and `🗓`, are read as `📅`.
+
+### Changed
+- The `%%td:…%%` marker goes after the task's text and before its dates and other fields, so the Tasks plugin can read them. Each device moves the marker on existing lines once, the first time it starts this version.
+- Only `[x]`, `[X]` and `[-]` (cancelled) complete the Todoist task. Other statuses, such as Tasks' `[/]` (in progress), leave it open and are kept on the line. New tasks are made from `[ ]` and `[/]` lines only.
+
 ## [0.3.0] - 2026-11-06
 
 ### Added

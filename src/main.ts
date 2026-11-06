@@ -178,6 +178,13 @@ export default class InlineTasksPlugin extends Plugin {
         const n = await this.engine.linkExisting();
         this.log(`no sync state on this device; linked ${n} existing task(s)`);
       }
+      if (!this.state.relaidOut) {
+        // Lines written before 0.4.0 have the marker last, which hides their fields from Tasks.
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        const skip = view?.file && view.getMode() === "source" ? { path: view.file.path, line: view.editor.getCursor().line } : undefined;
+        const n = await this.guard(() => this.engine.relayoutVault(skip));
+        if (n) this.log(`moved the marker before the fields on ${n} line(s)`);
+      }
       if (this.settings.apiToken) {
         await this.runPull();
         this.maybePromptBackfill();

@@ -2,11 +2,19 @@
  * Pure parsing/serialisation of markdown checkbox lines.
  *
  * Line format:
- *   <indent>- [ ] Task text 📅 2026-11-10 %%td:6Xg4Qm2pR%%
+ *   <indent>- [ ] Task text %%td:6Xg4Qm2pR%% 📅 2026-11-10
  *
  * - `%%td:<id>%%`      Todoist task id (Obsidian comment, hidden in reading view).
- *                      `%%td:new-<uuid>%%` marks a task whose creation is in flight.
+ *                      `%%td:new-<uuid>%%` marks a task whose creation is in flight. Written after
+ *                      the task's text and before its fields: the Tasks plugin reads fields from the
+ *                      end of the line and stops at anything it doesn't know, such as the marker.
  * - `📅 YYYY-MM-DD`    optional due date (Tasks-plugin compatible).
+ * - Tasks-plugin fields (`⏳ 🛫 ➕ ✅ ❌` dates, `🔁` repeats, `🔺 ⏫ 🔼 🔽 ⏬` priorities,
+ *                      `🆔 ⛔ 🏁`) and a `^block-link` at the end stay on the line, out of the
+ *                      Todoist title. Written in the order Tasks writes them.
+ * - Status: `[x]`, `[X]` (done) and `[-]` (cancelled) complete the Todoist task. Any other
+ *                      status, such as Tasks' `[/]` (in progress), leaves it open. New Todoist
+ *                      tasks are made only from `[ ]` and `[/]`.
  * - `#notodoist`       opt this line out of syncing.
  * - `#[Project name]`  file the task in that Todoist project (created if missing).
  *                      Stripped from the line once Todoist has applied it; the chip shows the project.
@@ -30,7 +38,10 @@ export interface ParsedTask extends TaskFields {
   prefix: string;
   /** Raw char inside the brackets (" ", "x", "X", "/", "-", ...). */
   status: string;
-  /** Everything after the checkbox except the marker and `📅` date, references included, spaces collapsed. */
+  /**
+   * Everything after the checkbox except the marker, the `📅` date, other Tasks fields and a block
+   * link: references included, spaces collapsed.
+   */
   content: string;
   /** Real Todoist id, or null. */
   todoistId: string | null;
@@ -45,13 +56,71 @@ export interface ParsedTask extends TaskFields {
   priorityRef: number | null;
   /** Due date in words (`next friday`, `15/11`, ...), as written, or null. The last one wins. */
   dueRef: string | null;
+  /** Tasks-plugin fields other than the due date, as on the line. Missing means none. */
+  fields?: TasksFields;
+  /** A block link at the end of the line (`^abc`), without the `^`, or null. */
+  blockLink?: string | null;
+}
+
+/** Tasks-plugin fields other than the due date. Values as Tasks writes them, after the emoji. */
+export interface TasksFields {
+  id?: string;
+  dependsOn?: string;
+  /** The emoji itself: 🔺 ⏫ 🔼 🔽 ⏬. */
+  priority?: string;
+  recurrence?: string;
+  onCompletion?: string;
+  created?: string;
+  start?: string;
+  scheduled?: string;
+  cancelled?: string;
+  done?: string;
+}
+
+type FieldKey = keyof TasksFields | "due";
+
+/** Optional variation selector after an emoji. */
+const VS = "\uFE0F?";
+const field = (key: FieldKey, emoji: string, value: string, write: (v: string) => string) => ({
+  key,
+  re: new RegExp(`\\s*(?:${emoji})${VS}${value}`, "gu"),
+  write,
+});
+const dateField = (key: FieldKey, emoji: string, sign: string) =>
+  field(key, emoji, "\\s*(\\d{4}-\\d{2}-\\d{2})", (v) => `${sign} ${v}`);
+/** Tasks' fields, in the order Tasks writes them after the description. */
+const FIELDS = [
+  field("id", "🆔", "\\s*([A-Za-z0-9_-]+)", (v) => `🆔 ${v}`),
+  field("dependsOn", "⛔", "\\s*([A-Za-z0-9_-]+(?:\\s*,\\s*[A-Za-z0-9_-]+)*)", (v) => `⛔ ${v}`),
+  field("priority", "", `(🔺|⏫|🔼|🔽|⏬)${VS}`, (v) => v),
+  field("recurrence", "🔁", "\\s*([A-Za-z0-9, !]*[A-Za-z0-9!])", (v) => `🔁 ${v}`),
+  field("onCompletion", "🏁", "\\s*([Dd]elete|[Kk]eep)", (v) => `🏁 ${v.toLowerCase()}`),
+  dateField("created", "➕", "➕"),
+  dateField("start", "🛫", "🛫"),
+  dateField("scheduled", "⏳|⌛", "⏳"),
+  dateField("due", "📅|📆|🗓", "📅"),
+  dateField("cancelled", "❌", "❌"),
+  dateField("done", "✅", "✅"),
+];
+const BLOCK_LINK_RE = /(?:^|\s)\^([A-Za-z0-9-]+)$/;
+/** Statuses that complete the Todoist task: done and cancelled. */
+const CLOSED_STATUSES = "xX-";
+/** Statuses an unsynced line can start a Todoist task from: to do, and Tasks' in progress. */
+const OPEN_STATUSES = " /";
+
+/** Whether a checkbox status completes the Todoist task. */
+export function isClosedStatus(status: string): boolean {
+  return status.length === 1 && CLOSED_STATUSES.includes(status);
+}
+
+/** Whether an unsynced line with this status, and not opted out, becomes a Todoist task. */
+export function createsTask(task: Pick<ParsedTask, "status" | "excluded" | "todoistId" | "pendingUuid">): boolean {
+  return !task.excluded && !task.todoistId && !task.pendingUuid && task.status.length === 1 && OPEN_STATUSES.includes(task.status);
 }
 
 const CHECKBOX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)\[(.)\]\s?(.*)$/;
 const MARKER_RE = /\s*%%td:([A-Za-z0-9_-]+)%%/;
 const MARKER_RE_G = /\s*%%td:[A-Za-z0-9_-]+%%/g;
-const DUE_RE = /\s*📅\s*(\d{4}-\d{2}-\d{2})/;
-const DUE_RE_G = /\s*📅\s*\d{4}-\d{2}-\d{2}/g;
 const OPT_OUT_RE = /(^|\s)#notodoist(\s|$)/;
 const PROJECT_RE_G = /(^|\s)#\[([^\]\n]*)\]/g;
 /**
@@ -88,17 +157,31 @@ export function parseTaskLine(line: string): ParsedTask | null {
 
   const marker = MARKER_RE.exec(rest);
   const markerId = marker ? marker[1] : null;
-  const due = DUE_RE.exec(rest);
 
-  const content = normalize(rest.replace(MARKER_RE_G, "").replace(DUE_RE_G, ""));
+  // Last one wins, as in Tasks, which reads from the end of the line.
+  let s = rest.replace(MARKER_RE_G, " ");
+  let due: string | null = null;
+  const fields: TasksFields = {};
+  for (const f of FIELDS) {
+    s = s.replace(f.re, (_m, v: string) => {
+      if (f.key === "due") due = v;
+      else fields[f.key] = v;
+      return " ";
+    });
+  }
+  let content = normalize(s);
+  const block = BLOCK_LINK_RE.exec(content);
+  if (block) content = content.slice(0, block.index).trimEnd();
   const refs = readRefs(content);
   return {
     prefix,
     status,
     content,
     ...refs,
-    checked: status !== " ",
-    due: due ? due[1] : null,
+    checked: isClosedStatus(status),
+    due,
+    fields,
+    blockLink: block ? block[1] : null,
     todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
     pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
     excluded: isExcluded(refs.text),
@@ -159,18 +242,36 @@ export function markerFor(task: Pick<ParsedTask, "todoistId" | "pendingUuid">): 
   return null;
 }
 
-/** Serialise a task back to a line. Preserves prefix and non-standard statuses when still checked. */
+/**
+ * Serialise a task back to a line: text, references, marker, then the Tasks fields and block link.
+ * Keeps the prefix, and a status that still says the same: `[-]` stays while the task is still
+ * closed, `[/]` while it's still open.
+ */
 export function serializeTask(task: ParsedTask): string {
-  const status = task.checked ? (task.status !== " " ? task.status : "x") : " ";
+  const closed = isClosedStatus(task.status);
+  const status = task.checked ? (closed ? task.status : "x") : closed ? " " : task.status;
   let out = `${task.prefix}[${status}] ${task.text}`;
   if (task.priorityRef) out += ` p${task.priorityRef}`;
   if (task.dueRef) out += ` ${task.dueRef}`;
   for (const l of task.labelRefs) out += ` ${labelRef(l)}`;
   if (task.projectRef) out += ` #[${task.projectRef}]`;
-  if (task.due) out += ` 📅 ${task.due}`;
   const marker = markerFor(task);
   if (marker) out += ` ${marker}`;
+  for (const f of FIELDS) {
+    const v = f.key === "due" ? task.due : task.fields?.[f.key];
+    if (v) out += ` ${f.write(v)}`;
+  }
+  if (task.blockLink) out += ` ^${task.blockLink}`;
   return out;
+}
+
+/**
+ * Whether a line has its marker last, after fields or a block link, as lines were written before
+ * the marker moved. Tasks can't read those fields until the line is rewritten.
+ */
+export function needsRelayout(line: string, task: ParsedTask): boolean {
+  if (!/%%td:[A-Za-z0-9_-]+%%\s*$/.test(line)) return false;
+  return !!task.due || !!task.blockLink || Object.values(task.fields ?? {}).some(Boolean);
 }
 
 /** How a label is written on a line: `@name`, or `@[Label name]` when the name needs it. */
@@ -299,7 +400,7 @@ export function startsLabel(line: string, ch: number): boolean {
   if (line.charAt(ch) !== "@") return false;
   const task = parseTaskLine(line);
   if (!task || /(^|\s)#notodoist(\s|$)/.test(line)) return false;
-  if (task.checked && !task.todoistId && !task.pendingUuid) return false; // never syncs, so a label means nothing
+  if (!task.todoistId && !task.pendingUuid && !createsTask(task)) return false; // never syncs, so a label means nothing
   if (ch < (CHECKBOX_PREFIX_RE.exec(line)?.[0].length ?? 0)) return false;
   return /\s/.test(line.charAt(ch - 1)) && (ch + 1 === line.length || /\s/.test(line.charAt(ch + 1)));
 }

@@ -1,6 +1,8 @@
 import {
+  createsTask,
   findLineByMarker,
   findTasks,
+  needsRelayout,
   parentLine,
   parseTaskLine,
   PENDING,
@@ -95,7 +97,7 @@ export class SyncEngine {
 
   /** Should an unmarked task on this line become a Todoist task? */
   private wantsCreate(task: ParsedTask): boolean {
-    return !task.excluded && !task.checked && !task.todoistId && !task.pendingUuid;
+    return createsTask(task);
   }
 
   projectIdFor(path: string): string | undefined {
@@ -156,6 +158,45 @@ export class SyncEngine {
     for (const path of this.vault.markdownFiles()) {
       if (this.isFileEligible(path)) await this.pushFile(path);
     }
+  }
+
+  /**
+   * Rewrite every line in the vault that has its marker after its fields, as lines were written
+   * before 0.4.0, so the Tasks plugin can read them. Lines being edited are left to their next push.
+   */
+  relayoutVault(skip?: { path: string; line: number }): Promise<number> {
+    return this.exclusive(async () => {
+      let n = 0;
+      for (const path of this.vault.markdownFiles()) {
+        if (!this.isFileEligible(path)) continue;
+        const relaid = (content: string) => {
+          const lines = content.split("\n");
+          let k = 0;
+          for (const { line, task } of findTasks(content)) {
+            if (path === skip?.path && line === skip.line) continue;
+            if (!needsRelayout(lines[line], task)) continue;
+            lines[line] = this.relayout(task);
+            k++;
+          }
+          return { content: lines.join("\n"), k };
+        };
+        // Read first, so notes with nothing to change aren't written.
+        if (!relaid(await this.vault.read(path)).k) continue;
+        await this.vault.process(path, (content) => {
+          const r = relaid(content);
+          n += r.k;
+          return r.k ? r.content : content;
+        });
+      }
+      this.state.relaidOut = true;
+      await this.save();
+      return n;
+    });
+  }
+
+  /** A line written in the current layout, its words read as its title as last synced. */
+  private relayout(task: ParsedTask): string {
+    return serializeTask(task.todoistId ? withTitle(task, this.state.tasks[task.todoistId]?.base.text) : task);
   }
 
   /**
@@ -253,9 +294,15 @@ export class SyncEngine {
     // 1. Assign pending markers to new tasks and write them to disk first, so a crash
     //    or a second device never results in an unmarked line being created twice.
     const newUuids: string[] = [];
+    let relaid = 0;
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
       for (const { line, task } of findTasks(content)) {
+        if (line !== opts.skipLine && needsRelayout(lines[line], task)) {
+          lines[line] = this.relayout(task);
+          relaid++;
+          continue;
+        }
         if (!this.wantsCreate(task)) continue;
         if (!canCreate) continue;
         if (line === opts.skipLine) {
@@ -266,8 +313,9 @@ export class SyncEngine {
         newUuids.push(id);
         lines[line] = serializeTask({ ...task, pendingUuid: id });
       }
-      return newUuids.length ? lines.join("\n") : content;
+      return newUuids.length || relaid ? lines.join("\n") : content;
     });
+    if (relaid) this.log(`${path}: moved the marker before the fields on ${relaid} line(s)`);
     for (const id of newUuids) this.state.pending[id] = { path, createdAt: Date.now() };
     if (newUuids.length) {
       this.log(`${path}: creating ${newUuids.length} new task(s)`);

@@ -160,7 +160,7 @@ describe("SyncEngine", () => {
     vault.files.set("Note.md", "# Hi\n- [ ] Call Bob 📅 2026-11-10\n- [x] Old done thing\n- [ ] Secret #notodoist");
     await engine.pushFile("Note.md");
     const lines = vault.files.get("Note.md")!.split("\n");
-    expect(lines[1]).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+    expect(lines[1]).toBe("- [ ] Call Bob %%td:T1%% 📅 2026-11-10");
     expect(lines[2]).toBe("- [x] Old done thing"); // already-checked lines are never created
     expect(lines[3]).toBe("- [ ] Secret #notodoist");
     const item = todoist.items.get("T1")!;
@@ -218,7 +218,7 @@ describe("SyncEngine", () => {
   it("pushes completion, text and due edits from the note", async () => {
     vault.files.set("Note.md", "- [ ] Call Bob");
     await engine.pushFile("Note.md");
-    vault.files.set("Note.md", "- [x] Call Bob about contract 📅 2026-12-01 %%td:T1%%");
+    vault.files.set("Note.md", "- [x] Call Bob about contract %%td:T1%% 📅 2026-12-01");
     await engine.pushFile("Note.md");
     expect(todoist.items.get("T1")).toMatchObject({ checked: true, content: "Call Bob about contract", due: { date: "2026-12-01" } });
     // nothing further to push
@@ -233,7 +233,7 @@ describe("SyncEngine", () => {
     await engine.pull();
     todoist.edit("T1", { checked: true, content: "Call Bob!", due: { date: "2026-11-20T09:00:00" } });
     await engine.pull();
-    expect(vault.files.get("Note.md")).toBe("intro\n  - [x] Call Bob! 📅 2026-11-20 %%td:T1%%\noutro");
+    expect(vault.files.get("Note.md")).toBe("intro\n  - [x] Call Bob! %%td:T1%% 📅 2026-11-20\noutro");
   });
 
   it("does not rewrite the note when a pull changes nothing on its lines", async () => {
@@ -325,7 +325,7 @@ describe("SyncEngine", () => {
       await engine.pushFile("Note.md");
       expect(projectOf("T1")).toBe("P2"); // matched ignoring case
       expect(todoist.items.get("T1")!.content).toBe("Send invoice");
-      expect(vault.files.get("Note.md")).toBe("- [ ] Send invoice 📅 2026-11-10 %%td:T1%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Send invoice %%td:T1%% 📅 2026-11-10");
     });
 
     it("creates a missing project once, even when several lines name it", async () => {
@@ -370,12 +370,12 @@ describe("SyncEngine", () => {
       pick("Work");
       await engine.pushFile("Note.md");
       expect(projectOf("T1")).toBe("P2");
-      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%% 📅 2026-11-10");
       pick("Inbox");
       await engine.pushFile("Note.md");
       expect(projectOf("T1")).toBe("inbox");
       expect(state.remote["T1"].projectId).toBe("inbox");
-      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%% 📅 2026-11-10");
       expect(todoist.items.get("T1")!.content).toBe("Call Bob");
     });
 
@@ -438,7 +438,7 @@ describe("SyncEngine", () => {
       await engine.pull();
       await engine.pushFile("Note.md");
       expect(todoist.items.get("T1")).toMatchObject({ content: "Call the dentist", priority: 4, labels: ["PhoneCall"] });
-      expect(vault.files.get("Note.md")).toBe("- [ ] Call the dentist 📅 2026-11-10 %%td:T1%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call the dentist %%td:T1%% 📅 2026-11-10");
       expect(state.remote.T1.priority).toBe(4);
     });
 
@@ -466,11 +466,11 @@ describe("SyncEngine", () => {
       await engine.pushFile("Note.md");
       expect(todoist.items.get("T2")).toMatchObject({ priority: 4, content: "Book train", parent_id: "T1" });
       expect(state.remote.T2.priority).toBe(4); // chip updates before the next pull
-      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%% 📅 2026-11-10");
       pick(4);
       await engine.pushFile("Note.md");
       expect(todoist.items.get("T2")!.priority).toBe(1);
-      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%% 📅 2026-11-10");
     });
 
     it("leaves it on the line while the line is being edited", async () => {
@@ -854,7 +854,7 @@ describe("SyncEngine", () => {
 
       const { lines, items } = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "  ", "\t");
       expect(lines).toEqual([
-        "  - [ ] Plan trip today 📅 2030-02-01 %%td:A%%",
+        "  - [ ] Plan trip today %%td:A%% 📅 2030-02-01",
         "  \t- [ ] Book flights %%td:C%%",
         "  \t\t- [ ] Pick seats %%td:D%%",
         "  \t- [ ] Book hotel %%td:B%%",
@@ -863,7 +863,7 @@ describe("SyncEngine", () => {
 
       // Without subtasks: just the task.
       const alone = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "", "\t", false);
-      expect(alone.lines).toEqual(["- [ ] Plan trip today 📅 2030-02-01 %%td:A%%"]);
+      expect(alone.lines).toEqual(["- [ ] Plan trip today %%td:A%% 📅 2030-02-01"]);
       expect(alone.items.map((i) => i.id)).toEqual(["A"]);
     });
 
@@ -969,7 +969,7 @@ describe("SyncEngine", () => {
       expect(engine.takePullRequest()).toBe(true);
       expect(engine.takePullRequest()).toBe(false); // once
       await engine.pull();
-      expect(vault.files.get("Note.md")).toBe(`- [ ] Send invoice 📅 ${D} %%td:T1%%`);
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Send invoice %%td:T1%% 📅 ${D}`);
       expect(state.tasks.T1.base.due).toBe(D);
     });
 
@@ -977,12 +977,12 @@ describe("SyncEngine", () => {
       vault.files.set("Note.md", "- [ ] Pay rent 📅 2026-11-01");
       await engine.pushFile("Note.md");
       await engine.pull();
-      vault.files.set("Note.md", "- [ ] Pay rent every month 📅 2026-12-01 %%td:T1%%");
+      vault.files.set("Note.md", "- [ ] Pay rent every month %%td:T1%% 📅 2026-12-01");
       await engine.pushFile("Note.md");
       expect(todoist.items.get("T1")!.due).toMatchObject({ date: D, is_recurring: true });
-      expect(vault.files.get("Note.md")).toBe("- [ ] Pay rent 📅 2026-12-01 %%td:T1%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Pay rent %%td:T1%% 📅 2026-12-01");
       await engine.pull();
-      expect(vault.files.get("Note.md")).toBe(`- [ ] Pay rent 📅 ${D} %%td:T1%%`);
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Pay rent %%td:T1%% 📅 ${D}`);
       expect(state.remote.T1.recurring).toBe(true);
     });
 
@@ -1003,7 +1003,7 @@ describe("SyncEngine", () => {
       vault.files.set("Note.md", "- [ ] Call Bob @phonecall @[waiting for] 📅 2026-11-10");
       await engine.pushFile("Note.md");
       expect(todoist.items.get("T1")).toMatchObject({ content: "Call Bob", labels: ["PhoneCall", "Waiting For"] });
-      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%% 📅 2026-11-10");
       expect(state.remote.T1.labels).toEqual(["PhoneCall", "Waiting For"]);
     });
 
@@ -1060,7 +1060,7 @@ describe("SyncEngine", () => {
     it("sets a date, and the line's 📅 follows", async () => {
       expect(await engine.changeDue("T2", { date: "2026-11-14" })).toBe(true);
       expect(todoist.items.get("T2")!.due).toMatchObject({ date: "2026-11-14" });
-      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-14 %%td:T2%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%% 📅 2026-11-14");
       expect(state.remote.T2.due).toBe("2026-11-14");
       const calls = todoist.calls.length;
       await engine.pushFile("Note.md");
@@ -1069,13 +1069,13 @@ describe("SyncEngine", () => {
 
     it("gives a task without a date one", async () => {
       await engine.changeDue("T1", { date: "2026-11-09" });
-      expect(vault.files.get("Note.md")).toBe("- [ ] Trip 📅 2026-11-09 %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%% 📅 2026-11-09\n\t- [ ] Book train %%td:T2%% 📅 2026-11-10");
     });
 
     it("sends words for Todoist to work out, including a repeat", async () => {
       await engine.changeDue("T2", { words: "every month" });
       expect(todoist.items.get("T2")!.due).toMatchObject({ string: "every month", is_recurring: true });
-      expect(vault.files.get("Note.md")).toBe(`- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 ${FakeTodoist.WORDS_DATE} %%td:T2%%`);
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%% 📅 ${FakeTodoist.WORDS_DATE}`);
       expect(state.remote.T2.recurring).toBe(true);
     });
 
@@ -1125,6 +1125,57 @@ describe("SyncEngine", () => {
       state.tasks.T1.orphaned = true;
       expect(await engine.changeLabels("T1", ["Errands"], [])).toBe(false);
       expect(todoist.items.get("T1")!.labels).toEqual(["PhoneCall"]);
+    });
+  });
+
+  describe("Tasks plugin lines", () => {
+    it("creates a task with a clean title and keeps Tasks' fields after the marker", async () => {
+      vault.files.set("Note.md", "- [ ] Water plants 🔁 every week ⏫ ⏳ 2026-11-08 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")).toMatchObject({ content: "Water plants", due: { date: "2026-11-10" } });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Water plants %%td:T1%% ⏫ 🔁 every week ⏳ 2026-11-08 📅 2026-11-10");
+    });
+
+    it("keeps a done date Tasks added, and a pull leaves it", async () => {
+      vault.files.set("Note.md", "- [ ] Pay rent 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", "- [x] Pay rent %%td:T1%% 📅 2026-11-10 ✅ 2026-11-06");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")).toMatchObject({ checked: true, content: "Pay rent" });
+      todoist.edit("T1", { content: "Pay the rent" });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [x] Pay the rent %%td:T1%% 📅 2026-11-10 ✅ 2026-11-06");
+    });
+
+    it("leaves an in-progress task open and closes a cancelled one", async () => {
+      vault.files.set("Note.md", "- [ ] Draft\n- [ ] Trip");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", "- [/] Draft %%td:T1%%\n- [-] Trip %%td:T2%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.checked).toBe(false);
+      expect(todoist.items.get("T2")!.checked).toBe(true);
+      todoist.edit("T2", { checked: false });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [/] Draft %%td:T1%%\n- [ ] Trip %%td:T2%%");
+    });
+
+    it("moves the marker before the fields on lines written with it last", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob\n- [ ] Pay rent");
+      await engine.pushFile("Note.md");
+      // As lines were written before 0.4.0, one with a title from Todoist that reads as references.
+      todoist.edit("T1", { content: "Call Bob today" });
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob today 📅 2026-11-10 %%td:T1%%\n- [ ] Pay rent %%td:T2%%");
+      vault.files.set("Other.md", "- [ ] Fix ⏫ %%td:T9%%\n- [ ] Plain %%td:T8%%");
+      const calls = todoist.calls.length;
+      expect(await engine.relayoutVault({ path: "Other.md", line: 0 })).toBe(1);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob today %%td:T1%% 📅 2026-11-10\n- [ ] Pay rent %%td:T2%%");
+      expect(vault.files.get("Other.md")).toBe("- [ ] Fix ⏫ %%td:T9%%\n- [ ] Plain %%td:T8%%"); // being edited
+      expect(state.relaidOut).toBe(true);
+      // The line being edited moves with its next push.
+      await engine.pushFile("Other.md");
+      expect(vault.files.get("Other.md")).toBe("- [ ] Fix %%td:T9%% ⏫\n- [ ] Plain %%td:T8%%");
+      expect(todoist.calls.slice(calls).flat().some((c) => c.type === "item_update" && c.args.id === "T1")).toBe(false);
     });
   });
 

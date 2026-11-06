@@ -72,6 +72,8 @@ export interface SyncState {
   subtasksSynced?: boolean;
   /** True once the user has confirmed the initial backfill of existing checkboxes. */
   backfillDone: boolean;
+  /** True once this device has moved markers in front of the fields on lines written before 0.4.0. */
+  relaidOut?: boolean;
 }
 
 export interface ProjectInfo {

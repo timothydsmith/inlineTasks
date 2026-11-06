@@ -3,7 +3,7 @@
 An Obsidian plugin that mirrors every checkbox in your notes to Todoist with **two-way sync**, and shows each synced task inline as a chip (like Jira issues in Confluence).
 
 ```markdown
-- [ ] Call Bob about the contract 📅 2026-11-10 %%td:6Xg4Qm2pR%%
+- [ ] Call Bob about the contract %%td:6Xg4Qm2pR%% 📅 2026-11-10
 ```
 
 renders as
@@ -14,7 +14,7 @@ renders as
 
 ## How it works
 
-- **Every open checkbox** in an eligible note becomes a Todoist task. The plugin appends a hidden `%%td:<id>%%` marker to the line.
+- **Every open checkbox** in an eligible note becomes a Todoist task. The plugin adds a hidden `%%td:<id>%%` marker to the line, after the task's text and before any dates.
 - **Two-way sync** of the task text, its completion and its due date (`📅 YYYY-MM-DD`, compatible with the Tasks plugin):
   - Tick a task on your phone and the checkbox in your note is ticked.
   - Edit the text in Obsidian and Todoist updates.
@@ -144,6 +144,19 @@ When the task next syncs, the words are sent to Todoist, which works out the dat
 - **Titles from Todoist are kept:** once a task is synced, the words of its title stay part of the title. A task renamed in Todoist to "Call Bob today", or imported with that title, keeps "today" in its title, and the same goes for `p1` or `@home` in a title. Only words typed after the title are read as references. If you edit the title in the middle of the line, the whole line is read again, as a new line would be.
 - **Timing:** like other references, it's applied once you move off the line, or straight away with **Sync now**. It needs a connection, since Todoist works out the date.
 
+### Using it with the Tasks plugin
+
+Lines are written so the [Tasks plugin](https://github.com/obsidian-tasks-group/obsidian-tasks) can read them. Tasks reads its fields from the end of the line, so the marker goes before them:
+
+```markdown
+- [ ] Water the plants %%td:6Xg4Qm2pR%% ⏫ 🔁 every week ⏳ 2026-11-08 📅 2026-11-10
+```
+
+- **Tasks' fields stay on the line and out of the Todoist title:** `⏳` scheduled, `🛫` start, `➕` created, `✅` done and `❌` cancelled dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔` and `🏁`, and a `^block-link` at the end. When the plugin rewrites a line, it writes them in the order Tasks does.
+- **Only `📅` syncs** with Todoist, as the due date. The other fields are kept in the note only, for now.
+- **Statuses:** `[x]` and `[X]` (done) and `[-]` (cancelled) complete the Todoist task. Any other status, such as Tasks' `[/]` (in progress), leaves it open. New Todoist tasks are made from `[ ]` and `[/]` lines only, so `[?]` and other custom statuses aren't sent to Todoist.
+- **Lines from earlier versions** had the marker last, which hides their fields from Tasks. Each device moves it in front of the fields once, the first time it starts this version, and any line it missed moves the next time its note syncs.
+
 ### Subtasks
 
 A new checkbox nested under another checkbox is created as its subtask in Todoist:
@@ -268,6 +281,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Labels:** typed references only add labels; removing one needs the picker. If a label is added in Todoist after this device last pulled and before a typed `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short. The picker pulls first, so it doesn't have this problem. A task with no labels has none on its chip to click: type `@` on its line instead.
 - **Subtasks:** a subtask added in Todoist to a task in a note appears only when you add it (see [Subtasks](#subtasks)). A task moved in Todoist under a task in another note, or in no note, keeps its place; lines aren't moved between notes.
 - **Order:** only subtasks are kept in order. The order of top-level tasks in a note isn't synced, since one note can hold tasks from several projects. The first time a task's subtasks are seen after updating, their order is just recorded: if the note and Todoist disagree then, they're left until one side is reordered. Lines synced before this version are taken as they're nested the first time each note syncs.
+- **Tasks plugin:** only the `📅` due date syncs; Tasks priorities, repeats and other dates stay in the note. A Tasks priority doesn't set the Todoist priority, and ticking a repeating task with Tasks, which adds a new line for the next occurrence, isn't handled yet.
 - **Not yet supported:** Todoist query blocks.
 
 ## Development

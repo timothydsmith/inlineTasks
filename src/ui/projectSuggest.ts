@@ -8,7 +8,7 @@ import {
   prepareFuzzySearch,
   TFile,
 } from "obsidian";
-import { parseTaskLine } from "../parse/taskLine";
+import { createsTask, parseTaskLine } from "../parse/taskLine";
 import { projectKey } from "../sync/engine";
 import { projectTree, type ProjectNode } from "../sync/projects";
 import type { SyncState } from "../sync/state";
@@ -49,7 +49,7 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
     const line = editor.getLine(cursor.line);
     const task = parseTaskLine(line);
     if (!task || /(^|\s)#notodoist(\s|$)/.test(line)) return null;
-    if (task.checked && !task.todoistId && !task.pendingUuid) return null; // never syncs, so a project means nothing
+    if (!task.todoistId && !task.pendingUuid && !createsTask(task)) return null; // never syncs, so a project means nothing
 
     const m = QUERY_RE.exec(line.slice(0, cursor.ch));
     if (!m) return null;
