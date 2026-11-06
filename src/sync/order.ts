@@ -87,10 +87,53 @@ function longestInOrder(seq: number[]): number[] {
   return out;
 }
 
+/**
+ * Move the task on line `from`, with everything nested under it, re-indented to its new place:
+ * under the task whose id is `parentId`, after the subtasks of it whose ids are in `before`
+ * (those ahead of it in Todoist's order), or first among them; or, for a null `parentId`, out
+ * to the top level of the list it's in, just after the block it was in. Null if there's no such
+ * place (the parent's line isn't in `lines`) or it's already top-level.
+ */
+export function moveBlock(
+  lines: string[],
+  from: number,
+  parentId: string | null,
+  before: Set<string>,
+  tab: string,
+  idOf: (line: string) => string | null,
+): string[] | null {
+  const ws = (l: string) => /^\s*/.exec(l)![0];
+  const taskLines = new Set(findTasks(lines.join("\n")).map((t) => t.line));
+  let top = from; // outermost checkbox it's nested under
+  for (let p = parentLine(lines, top, taskLines); p !== null; p = parentLine(lines, p, taskLines)) top = p;
+  if (!parentId && top === from) return null;
+
+  const end = blockEnd(lines, from);
+  const block = lines.slice(from, end + 1);
+  const rest = [...lines.slice(0, from), ...lines.slice(end + 1)];
+  let indent: string;
+  let after: number;
+  if (parentId) {
+    const p = rest.findIndex((l) => idOf(l) === parentId);
+    if (p < 0) return null;
+    indent = ws(rest[p]) + tab;
+    after = p;
+    for (const l of childLines(rest, p)) {
+      const id = idOf(rest[l]);
+      if (id && before.has(id)) after = blockEnd(rest, l);
+    }
+  } else {
+    indent = ws(rest[top]); // `top` is above the block, so removing it didn't shift
+    after = blockEnd(rest, top);
+  }
+  const base = ws(lines[from]);
+  const moved = block.map((l) => (l.startsWith(base) ? indent + l.slice(base.length) : l));
+  return [...rest.slice(0, after + 1), ...moved, ...rest.slice(after + 1)];
+}
+
 /** The direct subtask lines of the task on line `parent`: their line numbers, in order. */
 export function childLines(lines: string[], parent: number): number[] {
-  const content = lines.join("\n");
-  const taskLines = new Set(findTasks(content).map((t) => t.line));
+  const taskLines = new Set(findTasks(lines.join("\n")).map((t) => t.line));
   const end = blockEnd(lines, parent);
   const out: number[] = [];
   for (let i = parent + 1; i <= end; i++) if (taskLines.has(i) && parentLine(lines, i, taskLines) === parent) out.push(i);

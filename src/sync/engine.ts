@@ -11,7 +11,7 @@ import {
 } from "../parse/taskLine";
 import { dueDate, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
 import { isEmpty, merge } from "./merge";
-import { compareSiblings, inOrderOf, reorderBlocks, reorderKeys, sameOrder, type Sibling } from "./order";
+import { compareSiblings, inOrderOf, moveBlock, reorderBlocks, reorderKeys, sameOrder, type Sibling } from "./order";
 import type { SyncState } from "./state";
 
 /** The slice of Obsidian the engine needs. Implemented in main.ts; faked in tests. */
@@ -29,6 +29,8 @@ export interface EngineSettings {
   folderProjects: { folder: string; project: string }[];
   /** Whether this device may create new Todoist tasks (guards against duplicate creation across devices). */
   canCreate: boolean;
+  /** One level of list indentation, for lines the sync re-indents. Defaults to a tab. */
+  indent?: string;
 }
 
 export interface PushOptions {
@@ -781,6 +783,8 @@ export class SyncEngine {
 
     const byPath = new Map<string, TodoistItem[]>();
     const pendingResolutions = new Map<string, [string, string][]>();
+    /** Linked tasks moved to another parent in Todoist, by note. */
+    const movedHere = new Map<string, string[]>();
 
     for (const item of res.items ?? []) {
       // Creation that we sent but never saw a temp_id mapping for (e.g. de-duplicated retry).
@@ -796,6 +800,11 @@ export class SyncEngine {
         rec.orphaned = true;
         delete this.state.remote[item.id];
         continue;
+      }
+      // Moved to another parent (or out to the top level) in Todoist since we last saw it.
+      const was = this.state.remote[item.id]?.parentId;
+      if (was !== undefined && was !== (item.parent_id ?? null) && !item.checked) {
+        movedHere.set(rec.path, [...(movedHere.get(rec.path) ?? []), item.id]);
       }
       this.state.remote[item.id] = {
         projectId: item.project_id,
@@ -843,10 +852,62 @@ export class SyncEngine {
     }
 
     if (commands.length) await this.client.sync({ commands });
+    // Tasks moved to another parent in Todoist: move their lines to match.
+    for (const [path, ids] of movedHere) await this.followMoves(path, ids);
     // Subtasks reordered in Todoist (or here, and not yet sent) in the notes this pull touched.
     for (const path of byPath.keys()) await this.syncOrder(path);
     this.state.syncToken = res.sync_token;
     await this.save();
+  }
+
+  // ---------------------------------------------------------------- nesting from Todoist
+
+  /**
+   * Tasks in `path` that were moved to another parent in Todoist (or out to the top level): move
+   * their lines, with what's nested under them, to match. Not if the line's nesting was also
+   * changed in the note since the last sync; the note wins, and the push sends its version.
+   */
+  private async followMoves(path: string, ids: string[]): Promise<void> {
+    const idOf = (l: string) => parseTaskLine(l)?.todoistId ?? null;
+    const tab = this.settings().indent ?? "\t";
+    const sibling = (id: string): Sibling => ({ id, key: this.state.remote[id]?.orderKey, childOrder: this.state.remote[id]?.childOrder });
+    const notes: string[] = [];
+    await this.vault.process(path, (content) => {
+      let ls = content.split("\n");
+      let changed = false;
+      for (const id of ids) {
+        const rec = this.state.tasks[id];
+        const want = this.state.remote[id]?.parentId ?? null;
+        const at = findLineByMarker(ls, id);
+        if (!rec || rec.orphaned || at < 0) continue;
+        const taskLines = new Set(findTasks(ls.join("\n")).map((t) => t.line));
+        const p = parentLine(ls, at, taskLines);
+        const local = p === null ? null : idOf(ls[p]);
+        if (local === want) {
+          rec.parent = want;
+          continue;
+        }
+        if (rec.parent !== undefined && local !== rec.parent) continue; // moved in the note too: the note wins
+        if (want && findLineByMarker(ls, want) < 0) {
+          notes.push(`${path}: "${rec.base.text}" was moved in Todoist under a task that isn't in this note; left where it is`);
+          continue;
+        }
+        // Placed by Todoist's order among the new parent's subtasks that are in the note.
+        const before = new Set(
+          Object.entries(this.state.remote)
+            .filter(([k, m]) => k !== id && m.parentId === want && compareSiblings(sibling(k), sibling(id)) < 0)
+            .map(([k]) => k),
+        );
+        const next = moveBlock(ls, at, want, before, tab, idOf);
+        if (!next) continue;
+        ls = next;
+        rec.parent = want;
+        changed = true;
+        notes.push(`${path}: moved "${rec.base.text}" to match Todoist`);
+      }
+      return changed ? ls.join("\n") : content;
+    });
+    for (const n of notes) this.log(n);
   }
 
   // ---------------------------------------------------------------- subtask order

@@ -557,12 +557,46 @@ describe("SyncEngine", () => {
       expect(moves()).toEqual([{ id: "T4", parent_id: "T2" }]);
     });
 
-    it("doesn't undo a move made in Todoist", async () => {
+    it("moves the line out to the top level for a task made top-level in Todoist", async () => {
       todoist.edit("T4", { parent_id: null });
       await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Plan trip %%td:T1%%\n- [ ] Book hotel %%td:T2%%\n\t- [ ] Book flights %%td:T3%%\n- [ ] Pick seats %%td:T4%%",
+      );
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]); // not sent back
+      expect(parentOf("T4")).toBeNull();
+    });
+
+    it("moves the line, with its subtasks, under the task it was moved under in Todoist", async () => {
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [ ] Plan trip %%td:T1%%", "- [ ] Plan trip %%td:T1%%\n\t- [ ] Visa"));
+      await engine.pushFile("Note.md"); // T5 Visa, under T1
+      todoist.edit("T2", { parent_id: "T1", order_key: generateKeyBetween(null, todoist.items.get("T5")!.order_key!) });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Plan trip %%td:T1%%\n\t- [ ] Book hotel %%td:T2%%\n\t\t- [ ] Book flights %%td:T3%%\n\t\t\t- [ ] Pick seats %%td:T4%%\n\t- [ ] Visa %%td:T5%%",
+      );
       await engine.pushFile("Note.md");
       expect(moves()).toEqual([]);
-      expect(parentOf("T4")).toBeNull();
+    });
+
+    it("keeps the note's nesting when it was changed in both places", async () => {
+      todoist.edit("T4", { parent_id: null }); // out to the top level, in Todoist
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("\t\t- [ ] Pick seats", "\t- [ ] Pick seats")); // under T2, here
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toContain("\n\t- [ ] Pick seats %%td:T4%%");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", parent_id: "T2" }]);
+    });
+
+    it("leaves the line where it is when moved under a task that isn't in the note", async () => {
+      todoist.items.set("T9", { id: "T9", content: "Elsewhere", description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null, seq: ++todoist.seq });
+      todoist.edit("T4", { parent_id: "T9" });
+      const before = vault.files.get("Note.md");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(before);
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]); // nor moved back
     });
 
     it("moves a completed task only once it's unticked", async () => {

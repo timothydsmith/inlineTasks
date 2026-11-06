@@ -81,7 +81,7 @@ export default class InlineTasksPlugin extends Plugin {
       new TodoistClient(() => this.settings.apiToken, http),
       this.vaultAdapter(),
       this.state,
-      () => ({ ...this.settings, canCreate: this.canCreate }),
+      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit() }),
       () => this.saveState(),
       (msg) => this.log(msg),
     );
