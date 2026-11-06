@@ -822,10 +822,10 @@ export class SyncEngine {
   }
 
   private async pullInner(): Promise<void> {
-    // Projects saved before archived/parent were tracked need one full sync to fill them in, and so
-    // do tasks we have no details for, since an incremental sync only returns tasks that changed.
+    // Projects saved before archived/parent/order were tracked need one full sync to fill them in, and
+    // so do tasks we have no details for, since an incremental sync only returns tasks that changed.
     const stale =
-      Object.values(this.state.projects).some((p) => p.parentId === undefined) ||
+      Object.values(this.state.projects).some((p) => p.parentId === undefined || p.order === undefined) ||
       !this.state.labelsSynced ||
       !this.state.subtasksSynced;
     const missing = this.missingDetails();
@@ -863,6 +863,7 @@ export class SyncEngine {
           inbox: p.inbox_project,
           archived: p.is_archived,
           parentId: p.parent_id ?? null,
+          order: p.child_order ?? 0,
         };
       }
     }

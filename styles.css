@@ -52,3 +52,6 @@
 .inline-tasks-priority-flag.p2 { color: #eb8909; }
 .inline-tasks-priority-flag.p3 { color: #246fe0; }
 .inline-tasks-priority-flag.p4 { color: var(--text-faint); }
+.inline-tasks-project-choice { display: flex; align-items: center; gap: 0.35em; }
+.inline-tasks-project-hash { color: var(--text-faint); font-weight: 600; }
+.inline-tasks-suggest-note { margin-left: auto; }

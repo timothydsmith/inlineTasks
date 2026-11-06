@@ -1,9 +1,9 @@
 import { App, SuggestModal } from "obsidian";
 import { projectKey } from "../sync/engine";
 import type { SyncState } from "../sync/state";
-import { projectChoices, type ProjectChoice } from "./projectSuggest";
+import { projectChoices, renderProjectChoice, type ProjectChoice } from "./projectSuggest";
 
-type Choice = ProjectChoice | { kind: "create"; name: string; path: ""; id: ""; score: 0 };
+type Choice = ProjectChoice | { kind: "create"; name: string };
 
 /**
  * Pick a project to move a task to, from the project on its chip. Offers to create a project when
@@ -17,7 +17,7 @@ export class ProjectModal extends SuggestModal<Choice> {
     private onChoose: (name: string, id: string | undefined) => void,
   ) {
     super(app);
-    this.limit = 50;
+    this.limit = 500; // the whole project list, nested, when nothing is typed
     this.setPlaceholder("Move to project…");
     this.setInstructions([
       { command: "↑↓", purpose: "choose" },
@@ -30,8 +30,8 @@ export class ProjectModal extends SuggestModal<Choice> {
     const q = query.trim();
     const out: Choice[] = projectChoices(this.state, q);
     // `]` would end a `#[Project]` reference, so a name with one can't be created this way.
-    if (q && !q.includes("]") && !out.some((c) => projectKey(c.name) === projectKey(q))) {
-      out.push({ kind: "create", name: q, path: "", id: "", score: 0 });
+    if (q && !q.includes("]") && !out.some((c) => c.kind === "project" && projectKey(c.name) === projectKey(q))) {
+      out.push({ kind: "create", name: q });
     }
     return out;
   }
@@ -42,9 +42,7 @@ export class ProjectModal extends SuggestModal<Choice> {
       el.createDiv({ text: `Create project “${choice.name}”`, cls: "inline-tasks-suggest-create" });
       return;
     }
-    el.createDiv({ text: choice.name });
-    const details = [choice.path, choice.id === this.currentId ? "Current project" : ""].filter(Boolean).join(" · ");
-    if (details) el.createDiv({ text: details, cls: "inline-tasks-suggest-path" });
+    renderProjectChoice(choice, el, choice.id === this.currentId ? "Current" : undefined);
   }
 
   onChooseSuggestion(choice: Choice): void {

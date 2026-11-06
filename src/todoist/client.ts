@@ -46,6 +46,8 @@ export interface TodoistProject {
   is_deleted?: boolean;
   is_archived?: boolean;
   parent_id?: string | null;
+  /** Place among its sibling projects. */
+  child_order?: number;
 }
 
 export interface TodoistLabel {

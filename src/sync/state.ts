@@ -80,6 +80,8 @@ export interface ProjectInfo {
   inbox?: boolean;
   archived?: boolean;
   parentId?: string | null;
+  /** Place among its sibling projects in Todoist. Missing in state saved before it was tracked. */
+  order?: number;
 }
 
 export interface LabelInfo {

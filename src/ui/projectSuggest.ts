@@ -10,11 +10,11 @@ import {
 } from "obsidian";
 import { parseTaskLine } from "../parse/taskLine";
 import { projectKey } from "../sync/engine";
+import { projectTree, type ProjectNode } from "../sync/projects";
 import type { SyncState } from "../sync/state";
+import { todoistColor } from "../todoist/colors";
 
-type Choice =
-  | { kind: "project"; id: string; name: string; path: string; score: number }
-  | { kind: "create"; name: string };
+type Choice = ({ kind: "project"; score: number } & ProjectNode) | { kind: "create"; name: string };
 
 const CHECKBOX_RE = /^\s*(?:[-*+]|\d+[.)])\s+\[.\]/;
 /** `#[` (at line start or after a space) followed by the query, up to the cursor. */
@@ -36,7 +36,7 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
     private enabledFor: (file: TFile | null) => boolean,
   ) {
     super(app);
-    this.limit = 50;
+    this.limit = 500; // the whole project list, nested, when nothing is typed
     this.setInstructions([
       { command: "↑↓", purpose: "choose" },
       { command: "↵", purpose: "file in project" },
@@ -74,8 +74,7 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
       el.createDiv({ text: `Create project “${choice.name}”`, cls: "inline-tasks-suggest-create" });
       return;
     }
-    el.createDiv({ text: choice.name });
-    if (choice.path) el.createDiv({ text: choice.path, cls: "inline-tasks-suggest-path" });
+    renderProjectChoice(choice, el);
   }
 
   selectSuggestion(choice: Choice): void {
@@ -96,26 +95,34 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
 
 export type ProjectChoice = Extract<Choice, { kind: "project" }>;
 
-/** Active projects matching `query` (fuzzy), best first; all of them, Inbox first, for an empty query. */
+/**
+ * Active projects. With nothing typed, all of them as Todoist's sidebar lists them, nested (see
+ * projectTree). With a query, the ones matching it (fuzzy), best first, each with its parents' names.
+ */
 export function projectChoices(state: SyncState, query: string): ProjectChoice[] {
-  const { projects } = state;
-  const search = query ? prepareFuzzySearch(query) : null;
+  const tree = projectTree(state);
+  if (!query) return tree.map((p) => ({ kind: "project", ...p, score: 0 }));
+  const search = prepareFuzzySearch(query);
   const out: ProjectChoice[] = [];
-  for (const [id, p] of Object.entries(projects)) {
-    if (p.archived) continue;
-    const score = search ? search(p.name)?.score : 0;
-    if (score === undefined) continue;
-    out.push({ kind: "project", id, name: p.name, path: parentPath(state, p.parentId), score: p.inbox && !query ? 1 : score });
+  for (const p of tree) {
+    const score = search(p.name)?.score;
+    if (score !== undefined) out.push({ kind: "project", ...p, depth: 0, score });
   }
-  return out.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  return out.sort((a, b) => b.score - a.score); // stable, so ties keep Todoist's order
 }
 
-/** A project's parent projects, e.g. "Work / Clients". */
-function parentPath(state: SyncState, parentId: string | null | undefined): string {
-  const { projects } = state;
-  const names: string[] = [];
-  for (let id = parentId, guard = 0; id && projects[id] && guard < 10; id = projects[id].parentId, guard++) {
-    names.unshift(projects[id].name);
-  }
-  return names.join(" / ");
+/**
+ * One project in a picker: a `#` in the project's colour and its name, indented under its parent
+ * in the nested list, or with its parents' names beneath it in search results. `note` goes at the end.
+ */
+export function renderProjectChoice(choice: ProjectChoice, el: HTMLElement, note?: string): void {
+  el.addClass("inline-tasks-suggest");
+  const row = el.createDiv({ cls: "inline-tasks-project-choice" });
+  row.style.paddingLeft = `${choice.depth * 1.25}em`;
+  const hash = row.createSpan({ text: "#", cls: "inline-tasks-project-hash" });
+  const color = todoistColor(choice.color);
+  if (color) hash.style.color = color;
+  row.createSpan({ text: choice.name });
+  if (note) row.createSpan({ text: note, cls: "inline-tasks-suggest-path inline-tasks-suggest-note" });
+  if (choice.depth === 0 && choice.path) el.createDiv({ text: choice.path, cls: "inline-tasks-suggest-path" });
 }

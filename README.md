@@ -49,7 +49,7 @@ renders as
 
 ### Filing a task in a project
 
-Type `#[` on a checkbox line to open a menu of your Todoist projects, then keep typing to filter. Picking one inserts a project reference:
+Type `#[` on a checkbox line to open a menu of your Todoist projects, listed as Todoist's sidebar lists them: the Inbox first, then in your order, with subprojects nested under their parents. Keep typing to filter; matches show their parent projects beneath them. Picking one inserts a project reference:
 
 ```markdown
 - [ ] Get tiling quotes #[Home Reno]
