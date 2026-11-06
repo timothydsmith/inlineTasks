@@ -4,6 +4,7 @@ import {
   parseTaskLine,
   PENDING,
   serializeTask,
+  withTitle,
   type ParsedTask,
   type TaskFields,
 } from "../parse/taskLine";
@@ -164,12 +165,57 @@ export class SyncEngine {
         if (!this.isFileEligible(path)) continue;
         for (const { task } of findTasks(await this.vault.read(path))) {
           if (!task.todoistId || this.state.tasks[task.todoistId]) continue;
-          this.state.tasks[task.todoistId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
+          // The line's words are its title as synced (see withTitle), not references.
+          this.state.tasks[task.todoistId] = { path, base: { text: task.content, checked: task.checked, due: task.due } };
           n++;
         }
       }
       if (n) await this.save();
       return n;
+    });
+  }
+
+  // ---------------------------------------------------------------- import
+
+  /** Whether a Todoist task is already linked to a line in the vault. */
+  isLinked(id: string): boolean {
+    const rec = this.state.tasks[id];
+    return !!rec && !rec.orphaned;
+  }
+
+  /**
+   * All open Todoist tasks, for the import picker. A full read that leaves the sync token alone,
+   * so the next pull still sees everything changed since the last one.
+   */
+  openTasks(): Promise<TodoistItem[]> {
+    return this.exclusive(async () => {
+      const res = await this.client.sync({ syncToken: "*", resourceTypes: ["items"] });
+      return (res.items ?? []).filter((i) => !i.is_deleted && !i.checked);
+    });
+  }
+
+  /**
+   * Link tasks imported into `path`, given their lines as written (see importLines). Called before
+   * the lines reach the note, so a push or pull that runs first sees them as synced, not new.
+   */
+  registerImport(path: string, imported: { item: TodoistItem; line: string }[]): Promise<void> {
+    return this.exclusive(async () => {
+      for (const { item, line } of imported) {
+        const parsed = parseTaskLine(line);
+        if (!parsed) continue;
+        this.state.tasks[item.id] = { path, base: { text: parsed.content, checked: false, due: parsed.due } };
+        this.state.remote[item.id] = {
+          projectId: item.project_id,
+          priority: item.priority,
+          due: dueDate(item.due),
+          dueString: item.due?.string,
+          recurring: item.due?.is_recurring,
+          checked: false,
+          labels: item.labels,
+        };
+      }
+      this.log(`${path}: imported ${imported.length} task(s) from Todoist`);
+      await this.save();
     });
   }
 
@@ -279,8 +325,9 @@ export class SyncEngine {
       return out;
     };
 
-    for (const { line, task } of tasks) {
-      const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
+    for (const { line, task: parsed } of tasks) {
+      let task = parsed;
+      let local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
 
       if (task.pendingUuid) {
         const pend = this.state.pending[task.pendingUuid];
@@ -313,12 +360,16 @@ export class SyncEngine {
       let rec = this.state.tasks[id];
       let adopted = false;
       if (!rec) {
-        // Marker appeared here without a record (pasted from another note, or created elsewhere): adopt it.
-        rec = this.state.tasks[id] = { path, base: local };
+        // Marker appeared here without a record (pasted from another note, or created elsewhere):
+        // adopt it, taking the line's words as its title, since they came from a synced line.
+        rec = this.state.tasks[id] = { path, base: { ...local, text: parsed.content } };
         adopted = true;
       }
       rec.path = path;
       if (rec.orphaned) continue;
+      // Words of the synced title are title, not references (see withTitle).
+      task = withTitle(parsed, rec.base.text);
+      local = { text: task.text, checked: task.checked, due: task.due };
 
       // `#[Project]` on a synced task: move it, then strip the reference. Not while the line is being edited.
       if (task.projectRef) {
@@ -496,8 +547,9 @@ export class SyncEngine {
       let changed = false;
       for (const [id, a] of applied) {
         const idx = findLineByMarker(lines, id);
-        const task = idx >= 0 ? parseTaskLine(lines[idx]) : null;
-        if (!task) continue;
+        const parsed = idx >= 0 ? parseTaskLine(lines[idx]) : null;
+        if (!parsed) continue;
+        const task = withTitle(parsed, this.state.tasks[id]?.base.text);
         const appliedLabels = new Set((a.labels ?? []).map(labelKey));
         const labelRefs = task.labelRefs.filter((l) => !appliedLabels.has(labelKey(l)));
         const projectRef = a.project ? null : task.projectRef;
@@ -689,8 +741,9 @@ export class SyncEngine {
       const rec = this.state.tasks[item.id];
       const idx = findLineByMarker(lines, item.id);
       if (idx < 0) continue; // moved; the index will re-adopt it on the next push
-      const task = parseTaskLine(lines[idx]);
-      if (!task) continue;
+      const parsed = parseTaskLine(lines[idx]);
+      if (!parsed) continue;
+      const task = withTitle(parsed, rec.base.text);
       const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
       const remote: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
       const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;

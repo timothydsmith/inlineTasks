@@ -118,8 +118,18 @@ When the task next syncs, the words are sent to Todoist, which works out the dat
 
 - **New or synced tasks:** a new task is created with that date, and a synced task's date is changed. Words beat a `📅` on the same line.
 - **Phrases of their own:** each must be separate words. Weekdays are full names only, so "sun", "sat" and "wed" are left alone, as are "Fridays" and "15/11x". The last date on the line wins.
-- **In a title:** a separate date word is always read as a date, so "Call Bob today about it" becomes "Call Bob about it", due today. The same goes for `24/7` or `1/2`. Write it another way to keep it, such as "Call Bob (today) about it".
+- **In a title:** on a line you type, a separate date word is read as a date, so "Call Bob today about it" becomes "Call Bob about it", due today. The same goes for `24/7` or `1/2`. Write it another way to keep it, such as "Call Bob (today) about it".
+- **Titles from Todoist are kept:** once a task is synced, the words of its title stay part of the title. A task renamed in Todoist to "Call Bob today", or imported with that title, keeps "today" in its title, and the same goes for `p1` or `@home` in a title. Only words typed after the title are read as references. If you edit the title in the middle of the line, the whole line is read again, as a new line would be.
 - **Timing:** like other references, it's applied once you move off the line, or straight away with **Sync now**. It needs a connection, since Todoist works out the date.
+
+### Importing a task from Todoist
+
+Run **Import task from Todoist** in a note to pick any open Todoist task and insert it at the cursor, with its open subtasks indented beneath it in Todoist's order.
+
+- **Finding it:** type to search the task's title, project and due date. With nothing typed, tasks are listed by due date, soonest first. Each shows its project, due date and number of subtasks. Tasks already linked to a line in your vault aren't offered.
+- **Where it goes:** on an empty line or an empty list item, the task replaces it. Otherwise it goes on the next line, indented like the current list item.
+- **Linked straight away:** the lines carry the tasks' markers, so they sync like any other: the chip shows each task's project, labels and priority, and edits on either side sync both ways. Nothing is created or changed in Todoist by the import.
+- **Subtasks:** a subtask already linked to a line elsewhere is left out, along with its own subtasks.
 
 ### Excluding things
 - **Folders or notes** listed in settings (defaults to `Templates`). An entry matches a folder and everything inside it, or a single note by its path, e.g. `Journal/Private.md`.
@@ -186,6 +196,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 |---|---|
 | **Sync now** | Pushes every pending change, including the line you're on, then pulls. |
 | **Sync current note** | Pushes the active note immediately. |
+| **Import task from Todoist** | Inserts an open Todoist task, with its subtasks, at the cursor. See [Importing a task](#importing-a-task-from-todoist). |
 | **Review backfill of existing checkboxes** | Shows how many unsynced open checkboxes would be created, and creates them on confirm. |
 | **Save sync log to a note** | Writes this device's recent sync decisions to `Inline Tasks sync log (desktop).md` (or `android`, `ios`), so you can compare what each device did. |
 
@@ -209,7 +220,8 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used.
 - **Labels:** can be added from a note but not removed. If a label is added in Todoist after this device last pulled and before an `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short.
-- **Not yet supported:** nested checkboxes as subtasks, and Todoist query blocks.
+- **Subtasks:** imported subtasks keep their place in Todoist, but a nested checkbox you type is created as a task of its own, not as a subtask. Moving lines around in a note doesn't change which task is a subtask of which.
+- **Not yet supported:** Todoist query blocks.
 
 ## Development
 

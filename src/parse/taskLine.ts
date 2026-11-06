@@ -30,6 +30,8 @@ export interface ParsedTask extends TaskFields {
   prefix: string;
   /** Raw char inside the brackets (" ", "x", "X", "/", "-", ...). */
   status: string;
+  /** Everything after the checkbox except the marker and `📅` date, references included, spaces collapsed. */
+  content: string;
   /** Real Todoist id, or null. */
   todoistId: string | null;
   /** Pending creation uuid (from `%%td:new-<uuid>%%`), or null. */
@@ -88,9 +90,33 @@ export function parseTaskLine(line: string): ParsedTask | null {
   const markerId = marker ? marker[1] : null;
   const due = DUE_RE.exec(rest);
 
-  // Each kind of reference is read from what's left once the previous kinds are removed, so a
-  // bracketed name like `#[Phase p1]` or `@[Errands @home]` doesn't also count as something else.
-  let s = rest.replace(MARKER_RE_G, "").replace(DUE_RE_G, "");
+  const content = normalize(rest.replace(MARKER_RE_G, "").replace(DUE_RE_G, ""));
+  const refs = readRefs(content);
+  return {
+    prefix,
+    status,
+    content,
+    ...refs,
+    checked: status !== " ",
+    due: due ? due[1] : null,
+    todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
+    pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
+    excluded: isExcluded(refs.text),
+  };
+}
+
+type Refs = Pick<ParsedTask, "text" | "projectRef" | "labelRefs" | "priorityRef" | "dueRef">;
+
+const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
+const isExcluded = (text: string) => OPT_OUT_RE.test(text) || text.length === 0;
+
+/**
+ * Split references out of a line's content, leaving the task text. Each kind is read from what's
+ * left once the previous kinds are removed, so a bracketed name like `#[Phase p1]` or
+ * `@[Errands @home]` doesn't also count as something else.
+ */
+function readRefs(content: string): Refs {
+  let s = content;
   let projectRef: string | null = null;
   for (const p of s.matchAll(PROJECT_RE_G)) projectRef = p[2].trim() || projectRef;
   s = s.replace(PROJECT_RE_G, "$1");
@@ -104,23 +130,27 @@ export function parseTaskLine(line: string): ParsedTask | null {
   for (const p of s.matchAll(PRIORITY_RE_G)) priorityRef = Number(p[2]);
   s = s.replace(PRIORITY_RE_G, "$1");
   let dueRef: string | null = null;
-  for (const d of s.matchAll(DUE_WORDS_RE_G)) dueRef = d[2].replace(/\s+/g, " ");
-  const text = s.replace(DUE_WORDS_RE_G, "$1").replace(/\s+/g, " ").trim();
+  for (const d of s.matchAll(DUE_WORDS_RE_G)) dueRef = normalize(d[2]);
+  const text = normalize(s.replace(DUE_WORDS_RE_G, "$1"));
+  return { text, projectRef, labelRefs, priorityRef, dueRef };
+}
 
-  return {
-    prefix,
-    status,
-    text,
-    checked: status !== " ",
-    due: due ? due[1] : null,
-    todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
-    pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
-    excluded: OPT_OUT_RE.test(text) || text.length === 0,
-    projectRef,
-    labelRefs,
-    priorityRef,
-    dueRef,
-  };
+/**
+ * Re-read a synced task's line knowing its title as last synced with Todoist. Words that are part
+ * of that title stay part of it: "Call Bob today" from Todoist is a title, not a task due today.
+ * Only what follows the title (typically references typed after it) is read for references. A
+ * line whose title was edited in the middle is read in full, as `parseTaskLine` does.
+ */
+export function withTitle(task: ParsedTask, title: string | undefined): ParsedTask {
+  if (!title) return task;
+  const t = normalize(title);
+  if (task.content === t) {
+    return { ...task, text: t, projectRef: null, labelRefs: [], priorityRef: null, dueRef: null, excluded: isExcluded(t) };
+  }
+  if (!task.content.startsWith(t + " ")) return task;
+  const tail = readRefs(task.content.slice(t.length + 1));
+  const text = normalize(`${t} ${tail.text}`);
+  return { ...task, ...tail, text, excluded: isExcluded(text) };
 }
 
 export function markerFor(task: Pick<ParsedTask, "todoistId" | "pendingUuid">): string | null {

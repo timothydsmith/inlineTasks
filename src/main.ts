@@ -1,11 +1,13 @@
 import { EditorView } from "@codemirror/view";
-import { MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
+import { Editor, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { SyncEngine, type VaultAdapter } from "./sync/engine";
+import { importLines } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { emptyState, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
+import { ImportModal } from "./ui/importModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
 import { localEditTracker } from "./ui/localEdits";
 import { LabelSuggest } from "./ui/labelSuggest";
@@ -134,6 +136,16 @@ export default class InlineTasksPlugin extends Plugin {
         return true;
       },
     });
+    this.addCommand({
+      id: "import-task",
+      name: "Import task from Todoist",
+      editorCheckCallback: (checking, editor, ctx) => {
+        const file = ctx.file;
+        if (!file || !this.settings.apiToken || !this.state.backfillDone || !this.engine.isFileEligible(file.path)) return false;
+        if (!checking) void this.importTask(editor, file.path);
+        return true;
+      },
+    });
     this.addCommand({ id: "backfill", name: "Review backfill of existing checkboxes", callback: () => this.openBackfill() });
     this.addCommand({ id: "save-log", name: "Save sync log to a note", callback: () => this.saveLog() });
 
@@ -238,6 +250,39 @@ export default class InlineTasksPlugin extends Plugin {
       !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path);
     this.registerEditorSuggest(new ProjectSuggest(this.app, () => this.state, enabled));
     this.registerEditorSuggest(new LabelSuggest(this.app, () => this.state, enabled));
+  }
+
+  // ------------------------------------------------------------ import
+
+  /** Pick an open Todoist task and insert it, with its subtasks, at the cursor. */
+  private async importTask(editor: Editor, path: string): Promise<void> {
+    const items = await this.guard(() => this.engine.openTasks(), true);
+    if (!items) return;
+    new ImportModal(this.app, this.state, items, (id) => this.engine.isLinked(id), (root) => {
+      void this.guard(async () => {
+        const cursor = editor.getCursor();
+        const current = editor.getLine(cursor.line);
+        const list = /^(\s*)(?:[-*+]|\d+[.)])(?:\s+\[.\])?\s*(.*)$/.exec(current);
+        // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
+        const replace = current.trim() === "" || (!!list && list[2] === "");
+        const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
+        const tab = config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
+        // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
+        const { lines, items: imported } = importLines(root, items, (id) => this.engine.isLinked(id), indent, tab);
+        await this.engine.registerImport(path, imported.map((item, i) => ({ item, line: lines[i] })));
+        const text = lines.join("\n");
+        if (replace) {
+          editor.replaceRange(text, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: current.length });
+        } else {
+          editor.replaceRange(`\n${text}`, { line: cursor.line, ch: current.length });
+        }
+        const last = cursor.line + (replace ? 0 : 1) + lines.length - 1;
+        editor.setCursor({ line: last, ch: editor.getLine(last).length });
+        this.refresh();
+      }, true);
+    }).open();
   }
 
   // ------------------------------------------------------------ log

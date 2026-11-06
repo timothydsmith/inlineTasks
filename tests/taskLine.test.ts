@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findTasks, parseTaskLine, serializeTask } from "../src/parse/taskLine";
+import { findTasks, parseTaskLine, serializeTask, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -75,6 +75,21 @@ describe("parseTaskLine", () => {
       const t = parseTaskLine(line)!;
       expect([t.dueRef, t.text]).toEqual([dueRef, text]);
     }
+  });
+
+  it("reads only what follows a synced title for references", () => {
+    const line = "- [ ] Call Bob today p2 📅 2026-11-10 %%td:abc%%";
+    const plain = parseTaskLine(line)!;
+    expect([plain.text, plain.dueRef, plain.priorityRef]).toEqual(["Call Bob", "today", 2]);
+    expect(plain.content).toBe("Call Bob today p2");
+    const whole = withTitle(plain, "Call Bob today p2");
+    expect([whole.text, whole.dueRef, whole.priorityRef]).toEqual(["Call Bob today p2", null, null]);
+    const tail = withTitle(plain, "Call Bob  today");
+    expect([tail.text, tail.dueRef, tail.priorityRef]).toEqual(["Call Bob today", null, 2]);
+    const edited = withTitle(plain, "Ring Bob today");
+    expect(edited).toBe(plain); // title edited in the middle: read in full
+    expect(serializeTask(whole)).toBe(line);
+    expect(serializeTask(tail)).toBe(line);
   });
 
   it("doesn't read references inside a bracketed name", () => {

@@ -29,6 +29,10 @@ export interface TodoistItem {
   priority: number; // 1 (normal) .. 4 (urgent)
   due: TodoistDue | null;
   labels?: string[];
+  /** The parent task's id, for a subtask. */
+  parent_id?: string | null;
+  /** Position among its siblings. */
+  child_order?: number;
   updated_at?: string;
 }
 
