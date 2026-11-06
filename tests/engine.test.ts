@@ -505,14 +505,32 @@ describe("SyncEngine", () => {
       expect([...todoist.items.values()].find((i) => i.content === "Book train")!.project_id).toBe("P2");
     });
 
-    it("keeps a nested line with a #[Project] in that project on later pushes", async () => {
+    it("moves a new nested line with a #[Project] out of its block, as a top-level task there", async () => {
       await engine.pull();
-      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train #[Work]");
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train #[Work]\n\t- [ ] Pack");
       await engine.pushFile("Note.md");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Pack %%td:T3%%\n- [ ] Book train %%td:T2%%");
       const calls = todoist.calls.length;
       await engine.pushFile("Note.md");
       expect(todoist.calls.length).toBe(calls);
       expect(parentOf("Book train")).toBeUndefined();
+      expect(todoist.items.get("T2")!.project_id).toBe("P2");
+    });
+
+    it("moves a synced subtask filed in another project out of its block, with its own subtasks", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train\n\t\t- [ ] Seats\n\t- [ ] Pack");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("Book train", "Book train #[Work]"));
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")).toMatchObject({ project_id: "P2", parent_id: null });
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Trip %%td:T1%%\n\t- [ ] Pack %%td:T4%%\n- [ ] Book train %%td:T2%%\n\t- [ ] Seats %%td:T3%%",
+      );
+      const calls = todoist.calls.length;
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(calls + 1); // just the pull: nothing moved back
     });
   });
 

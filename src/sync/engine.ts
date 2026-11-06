@@ -346,6 +346,9 @@ export class SyncEngine {
     const unknownProject = new Set<string>();
     /** Each create's line, nested under which task (id or temp id) in the note, or null. */
     const createdUnder = new Map<string, string | null>();
+    /** Nested lines with a `#[Project]`: top-level tasks in that project, so moved out of their block. */
+    const outdentNew = new Set<string>();
+    const outdent = new Set<string>();
 
     /**
      * The Todoist parent for a new line nested under another checkbox: its task id, or the temp id
@@ -380,14 +383,16 @@ export class SyncEngine {
           description: this.backlink(path, task.pendingUuid),
         };
         // Nested under a task: a subtask, in its parent's project. A `#[Project]` reference wins,
-        // since a subtask can't be in another project than its parent.
+        // since a subtask can't be in another project than its parent: it's created as a
+        // top-level task there, and its line is moved out of the block to match.
         const placed = parentFor(line);
         if (placed === "wait" && !task.projectRef) {
           deferred = true; // created once its parent is, so it isn't made a task of its own
           continue;
         }
         const parent = task.projectRef || placed === "wait" ? null : placed;
-        createdUnder.set(task.pendingUuid, placed && placed !== "wait" ? placed.id : null);
+        if (task.projectRef && placed) outdentNew.add(task.pendingUuid);
+        createdUnder.set(task.pendingUuid, parent ? parent.id : null);
         if (parent) {
           args.parent_id = parent.id;
           if (parent.projectId) args.project_id = parent.projectId;
@@ -440,7 +445,16 @@ export class SyncEngine {
           } else if (target) {
             const cmd: Command = { type: "item_move", uuid: makeUuid(), args: { id, project_id: target } };
             commands.push(cmd);
-            onOk[cmd.uuid] = () => markApplied(id, { project: true });
+            // Moving to a project makes it a top-level task there, so a nested line moves out of its block.
+            const nested = parentFor(line) !== null;
+            const r = rec;
+            onOk[cmd.uuid] = () => {
+              markApplied(id, { project: true });
+              if (nested) {
+                outdent.add(id);
+                r.parent = null;
+              }
+            };
           }
         }
       }
@@ -640,10 +654,36 @@ export class SyncEngine {
       this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels, parentId };
     }
     await this.stripRefs(path, applied);
+    for (const [tmp, realId] of resolved) if (outdentNew.has(tmp)) outdent.add(realId);
+    if (outdent.size) await this.moveOut(path, [...outdent]);
     await this.syncOrder(path);
 
     await this.save();
     return { deferred };
+  }
+
+  /**
+   * Move these tasks' lines, with what's nested under them, out of the block they're in to the
+   * top level, just after it: they've become top-level tasks in Todoist (filed in another project).
+   */
+  private async moveOut(path: string, ids: string[]): Promise<void> {
+    const idOf = (l: string) => parseTaskLine(l)?.todoistId ?? null;
+    const tab = this.settings().indent ?? "\t";
+    await this.vault.process(path, (content) => {
+      let ls = content.split("\n");
+      let changed = false;
+      for (const id of ids) {
+        const at = findLineByMarker(ls, id);
+        const next = at >= 0 ? moveBlock(ls, at, null, new Set(), tab, idOf) : null;
+        if (!next) continue;
+        ls = next;
+        changed = true;
+        const rec = this.state.tasks[id];
+        if (rec) rec.parent = null;
+        this.log(`${path}: moved "${rec?.base.text ?? id}" out of its block, as it's now a top-level task in another project`);
+      }
+      return changed ? ls.join("\n") : content;
+    });
   }
 
   /**
