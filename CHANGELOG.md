@@ -18,10 +18,15 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - **Add missing subtasks from Todoist** command, also run by clicking the `↳` count: adds a task's open subtasks that aren't in a note yet beneath it, each where Todoist has it.
 - Subtask order syncs both ways: reordering subtasks in a note reorders them in Todoist, and reordering them in Todoist rearranges their lines in the note. The note wins if both were reordered.
 - Indenting, outdenting or moving a synced line changes which task it's a subtask of in Todoist, or makes it a top-level task. Moving a task in Todoist, under another task in the same note or out to the top level, moves its line to match. The note wins if a task was moved in both.
+- Clicking the project on a chip opens a project picker to move the task to another project, or to a new one. A subtask moved this way also moves out of its block.
+
+### Changed
+- The chip shows `#Inbox` for tasks in the Inbox, rather than no project.
 
 ### Fixed
 - Words in a title set in Todoist, such as "today", "friday" or "p1", are no longer read as a due date or priority when the task is pulled or imported. Only words typed after a synced title count as references.
 - A `@` inside a bracketed project name, such as `#[Errands @home]`, no longer also adds a label.
+- In reading view, chips in a list with a blank line between items no longer drop onto a line of their own.
 
 ## [0.2.0] - 2026-11-05
 

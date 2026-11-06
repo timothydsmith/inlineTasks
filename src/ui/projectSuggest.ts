@@ -61,7 +61,7 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
 
   getSuggestions(ctx: EditorSuggestContext): Choice[] {
     const query = ctx.query.trim();
-    const out: Choice[] = this.projects(query);
+    const out: Choice[] = projectChoices(this.getState(), query);
     if (query && !out.some((c) => c.kind === "project" && projectKey(c.name) === projectKey(query))) {
       out.push({ kind: "create", name: query });
     }
@@ -92,26 +92,30 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
     editor.setCursor({ line: start.line, ch: start.ch + text.length + (spaceAfter ? 1 : 0) });
   }
 
-  /** Active projects matching `query` (fuzzy), best first; all of them, Inbox first, for an empty query. */
-  private projects(query: string): Choice[] {
-    const { projects } = this.getState();
-    const search = query ? prepareFuzzySearch(query) : null;
-    const out: Extract<Choice, { kind: "project" }>[] = [];
-    for (const [id, p] of Object.entries(projects)) {
-      if (p.archived) continue;
-      const score = search ? search(p.name)?.score : 0;
-      if (score === undefined) continue;
-      out.push({ kind: "project", id, name: p.name, path: this.parentPath(p.parentId), score: p.inbox && !query ? 1 : score });
-    }
-    return out.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-  }
+}
 
-  private parentPath(parentId: string | null | undefined): string {
-    const { projects } = this.getState();
-    const names: string[] = [];
-    for (let id = parentId, guard = 0; id && projects[id] && guard < 10; id = projects[id].parentId, guard++) {
-      names.unshift(projects[id].name);
-    }
-    return names.join(" / ");
+export type ProjectChoice = Extract<Choice, { kind: "project" }>;
+
+/** Active projects matching `query` (fuzzy), best first; all of them, Inbox first, for an empty query. */
+export function projectChoices(state: SyncState, query: string): ProjectChoice[] {
+  const { projects } = state;
+  const search = query ? prepareFuzzySearch(query) : null;
+  const out: ProjectChoice[] = [];
+  for (const [id, p] of Object.entries(projects)) {
+    if (p.archived) continue;
+    const score = search ? search(p.name)?.score : 0;
+    if (score === undefined) continue;
+    out.push({ kind: "project", id, name: p.name, path: parentPath(state, p.parentId), score: p.inbox && !query ? 1 : score });
   }
+  return out.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+}
+
+/** A project's parent projects, e.g. "Work / Clients". */
+function parentPath(state: SyncState, parentId: string | null | undefined): string {
+  const { projects } = state;
+  const names: string[] = [];
+  for (let id = parentId, guard = 0; id && projects[id] && guard < 10; id = projects[id].parentId, guard++) {
+    names.unshift(projects[id].name);
+  }
+  return names.join(" / ");
 }

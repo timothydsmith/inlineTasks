@@ -2,13 +2,14 @@ import { EditorView } from "@codemirror/view";
 import { Editor, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { SyncEngine, type VaultAdapter } from "./sync/engine";
-import { blockEnd, findLineByMarker, parseTaskLine } from "./parse/taskLine";
+import { blockEnd, findLineByMarker, parseTaskLine, withProjectRef } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { emptyState, subtaskCount, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { ImportModal } from "./ui/importModal";
+import { ProjectModal } from "./ui/projectModal";
 import { SubtaskChoiceModal } from "./ui/subtaskChoiceModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
 import { localEditTracker } from "./ui/localEdits";
@@ -87,8 +88,8 @@ export default class InlineTasksPlugin extends Plugin {
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    const onSubtasks = (id: string) => void this.insertMissingSubtasks(id);
-    this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, onSubtasks));
+    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id) };
+    this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, chipActions));
     this.registerEditorExtension(
       localEditTracker(
         (path) => this.origin.localEdit(path, Date.now()),
@@ -99,7 +100,7 @@ export default class InlineTasksPlugin extends Plugin {
     for (const type of ["keydown", "pointerdown", "touchstart", "paste", "drop"] as const) {
       this.registerDomEvent(document, type, () => (this.lastInputAt = Date.now()), { capture: true });
     }
-    this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, onSubtasks));
+    this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, chipActions));
     this.registerSuggests();
 
     this.registerEvent(this.app.vault.on("modify", (f) => void this.onWrite(f)));
@@ -360,6 +361,56 @@ export default class InlineTasksPlugin extends Plugin {
       });
     }
     new Notice(added.length === 1 ? "Added 1 subtask" : `Added ${added.length} subtasks`);
+    this.refresh();
+  }
+
+  // ------------------------------------------------------------ project picker
+
+  /** Pick a project to move a synced task to, from a click on its chip's project. */
+  private changeProject(id: string): void {
+    const rec = this.state.tasks[id];
+    if (!rec || rec.orphaned || !this.settings.apiToken) return;
+    new ProjectModal(this.app, this.state, this.state.remote[id]?.projectId, (name, chosen) => {
+      // The move goes through a `#[Name]` reference, which can't hold a `]` or tell same-named projects apart.
+      if (name.includes("]")) {
+        new Notice(`Can't move a task to “${name}” from here, because of the ]. Use Todoist instead.`);
+        return;
+      }
+      if (chosen && this.engine.findProject(name) !== chosen) {
+        new Notice(`More than one project is called “${name}”, so it can't be picked from here. Use Todoist instead.`);
+        return;
+      }
+      void this.guard(() => this.fileInProject(id, name), true);
+    }).open();
+  }
+
+  /**
+   * Move a task to a project by adding `#[Name]` to its line and pushing the note straight away, so it
+   * goes the same way as a typed reference: a nested line moves out of its block, a missing project
+   * is created, and if Todoist can't be reached the reference stays on the line until it can.
+   */
+  private async fileInProject(id: string, name: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(this.state.tasks[id]?.path ?? "");
+    if (!(file instanceof TFile)) return;
+    // Save open editors first, so the write below doesn't race their unsaved text.
+    const views: MarkdownView[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof MarkdownView && leaf.view.file?.path === file.path) views.push(leaf.view);
+    });
+    for (const v of views) await v.save();
+    this.origin.localEdit(file.path, Date.now()); // the user's own change, so pushed straight away
+    let added = false;
+    await this.app.vault.process(file, (content) => {
+      const lines = content.split("\n");
+      const at = findLineByMarker(lines, id);
+      if (at < 0) return content;
+      lines[at] = withProjectRef(lines[at], name);
+      added = true;
+      return lines.join("\n");
+    });
+    if (!added) return;
+    this.log(`${file.path}: moving ${id} to project "${name}" (chip)`);
+    await this.engine.pushFile(file.path);
     this.refresh();
   }
 

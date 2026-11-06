@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findTasks, parentLine, parseTaskLine, serializeTask, withTitle } from "../src/parse/taskLine";
+import { findTasks, parentLine, parseTaskLine, serializeTask, withProjectRef, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -171,5 +171,18 @@ describe("findTasks", () => {
       [3, "one"],
       [10, "two"],
     ]);
+  });
+});
+
+describe("withProjectRef", () => {
+  it("adds the reference just before the marker, where it's read as a project", () => {
+    const line = "\t- [ ] Call Bob 📅 2026-11-10 %%td:T1%%";
+    const out = withProjectRef(line, "Home Reno");
+    expect(out).toBe("\t- [ ] Call Bob 📅 2026-11-10 #[Home Reno] %%td:T1%%");
+    expect(parseTaskLine(out)).toMatchObject({ projectRef: "Home Reno", due: "2026-11-10", todoistId: "T1" });
+  });
+
+  it("adds it at the end of a line without a marker", () => {
+    expect(withProjectRef("- [ ] Call Bob  ", "Work")).toBe("- [ ] Call Bob #[Work]  ");
   });
 });

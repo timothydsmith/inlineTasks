@@ -27,8 +27,8 @@
   background: #e44332; /* Todoist red */
 }
 .inline-tasks-due.is-overdue { color: var(--text-error); }
-.inline-tasks-subtasks { border-radius: 4px; padding: 0 0.2em; }
-.inline-tasks-subtasks:hover { background: var(--background-modifier-active-hover); color: var(--text-accent); }
+.inline-tasks-subtasks, .inline-tasks-project { border-radius: 4px; padding: 0 0.2em; }
+.inline-tasks-subtasks:hover, .inline-tasks-project:hover { background: var(--background-modifier-active-hover); color: var(--text-accent); }
 .inline-tasks-priority.p1 { color: #d1453b; font-weight: 600; }
 .inline-tasks-priority.p2 { color: #eb8909; font-weight: 600; }
 .inline-tasks-priority.p3 { color: #246fe0; font-weight: 600; }

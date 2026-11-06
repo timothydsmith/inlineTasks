@@ -44,7 +44,10 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
 
   if (meta) {
     const project = state.projects[meta.projectId];
-    if (project && !project.inbox) add("inline-tasks-project", `#${project.name}`);
+    if (project) {
+      add("inline-tasks-project", `#${project.name}`);
+      (chip.lastChild as HTMLElement).title = "Click to move it to another project";
+    }
     if (meta.due) add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
     const p = PRIORITY_CLASS[meta.priority];
     if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase());

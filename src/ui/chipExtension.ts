@@ -3,6 +3,7 @@ import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetTy
 import { editorLivePreviewField } from "obsidian";
 import type { SyncState } from "../sync/state";
 import { renderChip } from "./chip";
+import { chipAction, type ChipActions } from "./chipActions";
 
 /** Dispatch to an EditorView to re-render chips after sync state changes. */
 export const refreshChips = StateEffect.define<null>();
@@ -14,7 +15,7 @@ class ChipWidget extends WidgetType {
     private markerId: string,
     private state: () => SyncState,
     private version: number,
-    private onSubtasks: (id: string) => void,
+    private actions: ChipActions,
   ) {
     super();
   }
@@ -33,8 +34,9 @@ class ChipWidget extends WidgetType {
     chip.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      // The subtask count adds the missing subtasks to the note; the rest opens the task in Todoist.
-      if ((e.target as HTMLElement).closest(".inline-tasks-subtasks")) this.onSubtasks(this.markerId);
+      // The subtask count and the project have their own actions; the rest opens the task in Todoist.
+      const action = chipAction(e.target, this.actions);
+      if (action) action(this.markerId);
       else if (chip.href) window.open(chip.href, "_blank");
     });
     return chip;
@@ -46,7 +48,7 @@ class ChipWidget extends WidgetType {
 }
 
 /** Live-preview extension: replaces `%%td:ID%%` with a chip unless the cursor is inside it. */
-export function chipExtension(getState: () => SyncState, getVersion: () => number, onSubtasks: (id: string) => void) {
+export function chipExtension(getState: () => SyncState, getVersion: () => number, actions: ChipActions) {
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
@@ -80,7 +82,7 @@ export function chipExtension(getState: () => SyncState, getVersion: () => numbe
             builder.add(
               start,
               end,
-              Decoration.replace({ widget: new ChipWidget(m[1], getState, version, onSubtasks) }),
+              Decoration.replace({ widget: new ChipWidget(m[1], getState, version, actions) }),
             );
           }
         }

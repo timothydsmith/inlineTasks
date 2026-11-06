@@ -20,7 +20,7 @@ renders as
   - Edit the text in Obsidian and Todoist updates.
   - If both sides edited the same field, the most recent edit wins.
 - **The chip** shows project, due date (red when overdue, ↻ when recurring), priority and labels.
-  - Click it to open the task in Todoist.
+  - Click it to open the task in Todoist. Click the project to move the task to another one, or the `↳` subtask count to add missing subtasks.
   - To see or edit the raw marker, move the cursor onto it with the arrow keys, or click just beside the chip.
 - **Never deletes anything:**
   - Deleting a line in Obsidian only unlinks the task.
@@ -38,7 +38,7 @@ renders as
 
 | Chip | Meaning |
 |---|---|
-| `#Work` | Todoist project (hidden for the Inbox) |
+| `#Work`, `#Inbox` | Todoist project. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
 | `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring |
 | `P1` `P2` `P3` | Priority (P4 is not shown) |
 | `@label` | Todoist labels |
@@ -58,7 +58,7 @@ Type `#[` on a checkbox line to open a menu of your Todoist projects, then keep 
 When the task next syncs, it's filed in that project and the reference is removed from the line. The chip shows the project from then on.
 
 - **New task:** created directly in that project.
-- **Already-synced task:** moved to that project. Add another reference later to move it again.
+- **Already-synced task:** moved to that project. Add another reference later to move it again, or click the project on the chip and pick one: that adds the reference for you and syncs straight away.
 - **Project doesn't exist:** keep typing the new name, and the menu offers **Create project “…”**. A reference you type by hand to a missing project also creates it.
 - **Matching** ignores case and extra spaces. Archived projects are skipped, so naming one creates a new active project with the same name.
 - **Timing:** like new tasks, the reference is applied once you move off the line, or straight away with **Sync now**.
@@ -243,7 +243,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 
 - **Due times:** a time set in Todoist is shown as a date only. Changing the date in Obsidian replaces the due date with a date-only one, so the time is lost.
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
-- **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used.
+- **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used, and the chip's project picker won't move a task to either. Nor will it move one to a project whose name contains `]`.
 - **Labels:** can be added from a note but not removed. If a label is added in Todoist after this device last pulled and before an `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short.
 - **Subtasks:** a subtask added in Todoist to a task in a note appears only when you add it (see [Subtasks](#subtasks)). A task moved in Todoist under a task in another note, or in no note, keeps its place; lines aren't moved between notes.
 - **Order:** only subtasks are kept in order. The order of top-level tasks in a note isn't synced, since one note can hold tasks from several projects. The first time a task's subtasks are seen after updating, their order is just recorded: if the note and Todoist disagree then, they're left until one side is reordered. Lines synced before this version are taken as they're nested the first time each note syncs.

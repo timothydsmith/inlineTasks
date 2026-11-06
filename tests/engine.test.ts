@@ -1,7 +1,7 @@
 import { generateKeyBetween } from "fractional-indexing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { blockEnd } from "../src/parse/taskLine";
+import { blockEnd, withProjectRef } from "../src/parse/taskLine";
 import { importLines, withMissingSubtasks } from "../src/sync/importTask";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
@@ -359,6 +359,24 @@ describe("SyncEngine", () => {
       expect(state.remote["T1"].projectId).toBe("P2"); // chip updates before the next pull
       expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
       expect(todoist.items.get("T1")!.content).toBe("Call Bob"); // the reference never reaches the task text
+    });
+
+    it("moves a dated task to the project picked on its chip, and back to the Inbox", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      const pick = (name: string) => vault.files.set("Note.md", withProjectRef(vault.files.get("Note.md")!, name));
+      pick("Work");
+      await engine.pushFile("Note.md");
+      expect(projectOf("T1")).toBe("P2");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      pick("Inbox");
+      await engine.pushFile("Note.md");
+      expect(projectOf("T1")).toBe("inbox");
+      expect(state.remote["T1"].projectId).toBe("inbox");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      expect(todoist.items.get("T1")!.content).toBe("Call Bob");
     });
 
     it("leaves the reference alone while the cursor is on the line", async () => {

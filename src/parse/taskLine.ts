@@ -259,3 +259,10 @@ export function findLineByMarker(lines: string[], markerId: string): number {
 }
 
 export const PENDING = PENDING_PREFIX;
+
+/** The line with `#[name]` added just before its marker, where sync reads it as a project reference. */
+export function withProjectRef(line: string, name: string): string {
+  const marker = /\s*%%td:[A-Za-z0-9_-]+%%/.exec(line);
+  const at = marker ? marker.index : line.trimEnd().length;
+  return `${line.slice(0, at)} #[${name}]${line.slice(at)}`;
+}
