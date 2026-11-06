@@ -7,10 +7,11 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
 ### Added
 - `p1`–`p4` on a checkbox line sets the task's Todoist priority, on create or later (`p4` clears it). The word is removed from the line once applied, since the chip shows the priority.
 - Due dates in words: `today`, `tomorrow`, weekdays, `next friday`, `next week`, `every month` and other repeats, and `15/11`. Todoist works out the date, and the words are replaced on the line by `📅 YYYY-MM-DD`. `every …` makes a repeating task.
-
 - **Import task from Todoist** command: search your open Todoist tasks and insert one at the cursor, optionally with its open subtasks indented beneath it. The lines are linked straight away and sync both ways.
 - **Import subtasks** setting: ask each time (the default), always import or never import a task's subtasks.
 - A new checkbox nested under another checkbox is created as its subtask in Todoist, in the parent's project. A new task and its new subtasks are created together. A `#[Project]` on a nested line makes it a top-level task in that project instead, and moves its line out of the block.
@@ -19,7 +20,6 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - Subtask order syncs both ways: reordering subtasks in a note reorders them in Todoist, and reordering them in Todoist rearranges their lines in the note. The note wins if both were reordered.
 - Indenting, outdenting or moving a synced line changes which task it's a subtask of in Todoist, or makes it a top-level task. Moving a task in Todoist, under another task in the same note or out to the top level, moves its line to match. The note wins if a task was moved in both.
 - Clicking the project on a chip opens a project picker to move the task to another project, or to a new one. A subtask moved this way also moves out of its block.
-
 - Label picker, like Todoist's label menu: every label with a tick box, the task's own labels ticked, and several can be ticked or unticked at once. Opened by clicking a label on a chip, or by typing `@` on a checkbox line. Unticking a label removes it from the task, which typed references can't do. Closing it without ticking or unticking anything cancels, and a label is only created by choosing **Create label**.
 - Clicking the priority on a chip opens a priority picker, like Todoist's. Priority 4 clears it.
 - Clicking the due date on a chip opens a date picker, like Todoist's scheduler: Today, Tomorrow, the weekend, next week or no date, or any date typed in words for Todoist to work out.
@@ -27,6 +27,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 ### Changed
 - The chip shows `#Inbox` for tasks in the Inbox, rather than no project.
 - The project on a chip is shown in the project's Todoist colour.
+- A chip with two or more labels shows a tag icon and how many, rather than every label. Hover to see them.
 - The project menus (`#[` and the chip's project picker) list projects in Todoist's order, with subprojects nested under their parents and each project's colour, rather than alphabetically.
 - Typing `@` on a checkbox line opens the label picker, rather than a menu that inserts one label reference.
 
@@ -63,6 +64,7 @@ First release. Needs Obsidian 1.8.7 or later.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
-[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.2.0...dev
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.3.0...dev
+[0.3.0]: https://github.com/timothydsmith/inlineTasks/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/timothydsmith/inlineTasks/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/timothydsmith/inlineTasks/releases/tag/0.1.0
