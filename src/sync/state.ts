@@ -4,6 +4,12 @@ export interface TaskRecord {
   path: string;
   /** Field values at the last successful sync (three-way merge base). */
   base: TaskFields;
+  /**
+   * The task this line was nested under in the note when last synced (null: not nested under a
+   * synced task). Undefined until first seen. Only a change here moves the task in Todoist, so
+   * moving it in Todoist isn't undone by a note whose nesting hasn't changed.
+   */
+  parent?: string | null;
   orphaned?: boolean;
 }
 
@@ -16,6 +22,8 @@ export interface RemoteMeta {
   recurring?: boolean;
   checked: boolean;
   labels?: string[];
+  /** Parent task in Todoist, or null for a top-level task. Undefined if not known yet. */
+  parentId?: string | null;
 }
 
 export interface PendingCreate {

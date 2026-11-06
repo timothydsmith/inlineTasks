@@ -213,6 +213,7 @@ export class SyncEngine {
           recurring: item.due?.is_recurring,
           checked: false,
           labels: item.labels,
+          parentId: item.parent_id ?? null,
         };
       }
       this.log(`${path}: imported ${imported.length} task(s) from Todoist`);
@@ -333,6 +334,8 @@ export class SyncEngine {
     const sentCreates = new Map<string, string | undefined>();
     /** Creates of subtasks whose project this device doesn't know; a pull fills in their chip. */
     const unknownProject = new Set<string>();
+    /** Each create's line, nested under which task (id or temp id) in the note, or null. */
+    const createdUnder = new Map<string, string | null>();
 
     /**
      * The Todoist parent for a new line nested under another checkbox: its task id, or the temp id
@@ -368,11 +371,13 @@ export class SyncEngine {
         };
         // Nested under a task: a subtask, in its parent's project. A `#[Project]` reference wins,
         // since a subtask can't be in another project than its parent.
-        const parent = task.projectRef ? null : parentFor(line);
-        if (parent === "wait") {
+        const placed = parentFor(line);
+        if (placed === "wait" && !task.projectRef) {
           deferred = true; // created once its parent is, so it isn't made a task of its own
           continue;
         }
+        const parent = task.projectRef || placed === "wait" ? null : placed;
+        createdUnder.set(task.pendingUuid, placed && placed !== "wait" ? placed.id : null);
         if (parent) {
           args.parent_id = parent.id;
           if (parent.projectId) args.project_id = parent.projectId;
@@ -492,6 +497,36 @@ export class SyncEngine {
           };
         }
       }
+      // Nesting changed in the note since the last sync (indented, outdented or moved): make it a
+      // subtask of the task it's now under, or a top-level task. Todoist moves a subtask's own
+      // subtasks with it, and those lines moved with it here, so they stay put.
+      const placed = parentFor(line);
+      if (placed === "wait" || (placed && sentCreates.has(placed.id))) {
+        if (canCreate) deferred = true; // its new parent is being created; move it once it has an id
+      } else {
+        const want = placed ? placed.id : null;
+        const r = rec;
+        if (r.parent === undefined || adopted || task.projectRef || want === r.parent) {
+          r.parent = want; // first seen, unchanged, or a `#[Project]` (which wins): just note it
+        } else if (task.checked) {
+          // A completed task isn't moved; the change applies if it's unticked.
+        } else if (!meta || meta.parentId === undefined) {
+          deferred = true; // its Todoist details are needed first; a pull brings them
+        } else if (want === meta.parentId) {
+          r.parent = want; // already so in Todoist
+        } else {
+          const args = want ? { id, parent_id: want } : { id, project_id: meta.projectId };
+          const cmd: Command = { type: "item_move", uuid: makeUuid(), args };
+          commands.push(cmd);
+          onOk[cmd.uuid] = () => {
+            r.parent = want;
+            meta.parentId = want;
+            const parentProject = want ? this.state.remote[want]?.projectId : undefined;
+            if (parentProject) meta.projectId = parentProject; // a subtask is in its parent's project
+          };
+        }
+      }
+
       if (adopted) continue;
 
       const { push } = merge(rec.base, local, rec.base, 0, 0);
@@ -555,7 +590,10 @@ export class SyncEngine {
       if (cmd.type !== "item_move" || !applied.get(cmd.args.id as string)?.project) continue;
       const meta = this.state.remote[cmd.args.id as string];
       const pid = cmd.args.project_id as string;
-      if (meta) meta.projectId = mapping[pid] ?? pid;
+      if (meta) {
+        meta.projectId = mapping[pid] ?? pid;
+        meta.parentId = null; // moving to a project puts it at the top level
+      }
     }
 
     // 4. Replace pending markers with real ids, and strip project references that have been applied.
@@ -567,13 +605,20 @@ export class SyncEngine {
     for (const [tmp, realId] of resolved) {
       const cmd = commands.find((c) => c.uuid === tmp && c.type === "item_add");
       if ((cmd?.args.due as { string?: string } | undefined)?.string) this.wantPull = true; // fetch the date
-      const pid = cmd?.args.project_id as string | undefined;
+      const rec = this.state.tasks[realId];
+      if (!cmd || !rec) continue;
+      const parent = cmd.args.parent_id as string | undefined;
+      const parentId = parent ? (mapping[parent] ?? parent) : null;
+      // Its nesting in the note when created, so a later indent or outdent is seen as a change.
+      const under = createdUnder.get(tmp);
+      if (rec.parent === undefined) rec.parent = under ? (mapping[under] ?? under) : null;
+      const pid = cmd.args.project_id as string | undefined;
       const projectId = pid ? (mapping[pid] ?? pid) : inbox;
-      if (!cmd || !projectId || unknownProject.has(tmp) || !this.state.tasks[realId] || this.state.remote[realId]) continue;
+      if (!projectId || unknownProject.has(tmp) || this.state.remote[realId]) continue;
       const due = cmd.args.due as { date: string } | undefined;
       const labels = (cmd.args.labels as string[] | undefined) ?? [];
       const priority = (cmd.args.priority as number | undefined) ?? 1;
-      this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels };
+      this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels, parentId };
     }
     await this.stripRefs(path, applied);
 
@@ -659,11 +704,12 @@ export class SyncEngine {
   /**
    * Linked tasks this device has no Todoist details for (project, due date, ...), and hasn't yet
    * tried to fetch. Happens when a task was created on another device: its marker arrives here by
-   * Obsidian Sync after this device's pulls have already gone past the task.
+   * Obsidian Sync after this device's pulls have already gone past the task. Also tasks whose
+   * details were saved before their parent task was tracked, which moving them needs.
    */
   missingDetails(): string[] {
     return Object.entries(this.state.tasks)
-      .filter(([id, rec]) => !rec.orphaned && !this.state.remote[id] && !this.fetchTried.has(id))
+      .filter(([id, rec]) => !rec.orphaned && this.state.remote[id]?.parentId === undefined && !this.fetchTried.has(id))
       .map(([id]) => id);
   }
 
@@ -736,6 +782,7 @@ export class SyncEngine {
         recurring: item.due?.is_recurring,
         checked: item.checked,
         labels: item.labels,
+        parentId: item.parent_id ?? null,
       };
       byPath.set(rec.path, [...(byPath.get(rec.path) ?? []), item]);
     }

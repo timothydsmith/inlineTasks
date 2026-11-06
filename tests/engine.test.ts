@@ -67,7 +67,13 @@ class FakeTodoist {
           if ("priority" in a) it.priority = a.priority;
         } else if (c.type === "item_close") it.checked = true;
         else if (c.type === "item_uncomplete") it.checked = false;
-        else if (c.type === "item_move") it.project_id = a.project_id;
+        else if (c.type === "item_move" && a.parent_id) {
+          it.parent_id = a.parent_id;
+          it.project_id = this.items.get(a.parent_id)!.project_id;
+        } else if (c.type === "item_move") {
+          it.project_id = a.project_id;
+          it.parent_id = null;
+        }
         it.seq = ++this.seq;
       }
     }
@@ -479,14 +485,107 @@ describe("SyncEngine", () => {
       expect([...todoist.items.values()].find((i) => i.content === "Book train")!.project_id).toBe("P2");
     });
 
-    it("leaves synced tasks where they are when lines are indented later", async () => {
-      vault.files.set("Note.md", "- [ ] Plan trip\n- [ ] Book hotel");
+    it("keeps a nested line with a #[Project] in that project on later pushes", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train #[Work]");
       await engine.pushFile("Note.md");
-      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [ ] Book", "\t- [ ] Book"));
       const calls = todoist.calls.length;
       await engine.pushFile("Note.md");
       expect(todoist.calls.length).toBe(calls);
-      expect(parentOf("Book hotel")).toBeUndefined();
+      expect(parentOf("Book train")).toBeUndefined();
+    });
+  });
+
+  describe("indenting and moving synced lines", () => {
+    const parentOf = (id: string) => todoist.items.get(id)?.parent_id ?? null;
+    const edit = (from: string, to: string) => vault.files.set("Note.md", vault.files.get("Note.md")!.replace(from, to));
+    const moves = () => todoist.calls.flat().filter((c) => c.type === "item_move").map((c) => c.args);
+    /** Indent "Book hotel" and its subtasks one level, as Obsidian's Tab on a list item does. */
+    const indentHotel = (above = "") =>
+      edit("- [ ] Book hotel", `${above}\t- [ ] Book hotel`) &&
+      edit("\t- [ ] Book flights", "\t\t- [ ] Book flights") &&
+      edit("\t\t- [ ] Pick seats", "\t\t\t- [ ] Pick seats");
+
+    beforeEach(async () => {
+      await engine.pull();
+      // T1 Plan trip (Work), T2 Book hotel, T3 Book flights (subtask of T1), T4 Pick seats (of T3)
+      vault.files.set("Note.md", "- [ ] Plan trip #[Work]\n- [ ] Book hotel\n\t- [ ] Book flights\n\t\t- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect([parentOf("T2"), parentOf("T3"), parentOf("T4")]).toEqual([null, "T2", "T3"]);
+    });
+
+    it("makes an indented line a subtask of the task above, in that task's project", async () => {
+      indentHotel();
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T2", parent_id: "T1" }]); // its subtasks move with it
+      expect(todoist.items.get("T2")).toMatchObject({ parent_id: "T1", project_id: "P2" });
+      expect(state.remote["T2"]).toMatchObject({ parentId: "T1", projectId: "P2" });
+      await engine.pushFile("Note.md");
+      expect(moves().length).toBe(1); // once
+    });
+
+    it("makes an outdented line a top-level task in its project", async () => {
+      edit("\t\t- [ ] Pick seats", "- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", project_id: "inbox" }]);
+      expect(parentOf("T4")).toBeNull();
+    });
+
+    it("moves a line to the task it's now nested under", async () => {
+      edit("\t\t- [ ] Pick seats", "\t- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", parent_id: "T2" }]);
+    });
+
+    it("doesn't undo a move made in Todoist", async () => {
+      todoist.edit("T4", { parent_id: null });
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]);
+      expect(parentOf("T4")).toBeNull();
+    });
+
+    it("moves a completed task only once it's unticked", async () => {
+      edit("\t\t- [ ] Pick seats", "- [x] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]);
+      edit("- [x] Pick seats", "- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", project_id: "inbox" }]);
+    });
+
+    it("waits to move a line under a new task until that task is created", async () => {
+      indentHotel("- [ ] Hotels\n");
+      const r = await engine.pushFile("Note.md");
+      expect(r.deferred).toBe(true);
+      expect(moves()).toEqual([]);
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T2", parent_id: "T5" }]);
+    });
+
+    it("fetches the parent of tasks synced before parents were tracked, then moves them", async () => {
+      for (const meta of Object.values(state.remote)) delete meta.parentId; // as saved by an older version
+      for (const rec of Object.values(state.tasks)) delete rec.parent;
+      await engine.pushFile("Note.md"); // first sight: nesting noted
+      expect(engine.missingDetails().sort()).toEqual(["T1", "T2", "T3", "T4"]);
+      edit("\t\t- [ ] Pick seats", "- [ ] Pick seats");
+      expect((await engine.pushFile("Note.md")).deferred).toBe(true);
+      expect(moves()).toEqual([]);
+      await engine.pull(); // full sync, for the missing details
+      expect(state.remote["T4"].parentId).toBe("T3");
+      expect(engine.missingDetails()).toEqual([]);
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", project_id: "inbox" }]);
+    });
+
+    it("takes an imported or pasted line's nesting as it finds it", async () => {
+      todoist.items.set("T9", { id: "T9", content: "Pack", description: "", project_id: "P2", checked: false, is_deleted: false, priority: 1, due: null, parent_id: "T1", seq: ++todoist.seq });
+      edit("- [ ] Book hotel", "- [ ] Pack %%td:T9%%\n- [ ] Book hotel");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]);
+      expect(parentOf("T9")).toBe("T1");
     });
   });
 
