@@ -1,6 +1,7 @@
 import {
   findLineByMarker,
   findTasks,
+  parentLine,
   parseTaskLine,
   PENDING,
   serializeTask,
@@ -325,6 +326,34 @@ export class SyncEngine {
       return out;
     };
 
+    const lines = content.split("\n");
+    const byLine = new Map(tasks.map((t) => [t.line, t.task]));
+    const taskLines = new Set(byLine.keys());
+    /** Creates sent by this push: pending uuid → project id sent (undefined: the Inbox). */
+    const sentCreates = new Map<string, string | undefined>();
+    /** Creates of subtasks whose project this device doesn't know; a pull fills in their chip. */
+    const unknownProject = new Set<string>();
+
+    /**
+     * The Todoist parent for a new line nested under another checkbox: its task id, or the temp id
+     * of its create in this push, with its project (null if unknown). "wait" if the parent isn't
+     * created yet; null for a line that isn't nested under a synced or syncing task.
+     */
+    const parentFor = (line: number): { id: string; projectId: string | null | undefined } | "wait" | null => {
+      const p = parentLine(lines, line, taskLines);
+      if (p === null) return null;
+      const pt = byLine.get(p)!;
+      if (pt.todoistId) {
+        if (this.state.tasks[pt.todoistId]?.orphaned) return null;
+        const meta = this.state.remote[pt.todoistId];
+        return { id: pt.todoistId, projectId: meta ? meta.projectId : null };
+      }
+      if (pt.pendingUuid) {
+        return sentCreates.has(pt.pendingUuid) ? { id: pt.pendingUuid, projectId: sentCreates.get(pt.pendingUuid) } : "wait";
+      }
+      return this.wantsCreate(pt) ? "wait" : null;
+    };
+
     for (const { line, task: parsed } of tasks) {
       let task = parsed;
       let local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
@@ -337,9 +366,22 @@ export class SyncEngine {
           content: task.text,
           description: this.backlink(path, task.pendingUuid),
         };
-        const projectId = task.projectRef ? projectTarget(task.projectRef) : this.projectIdFor(path);
-        if (task.projectRef && !projectId) continue; // project can't be created on this device
-        if (projectId) args.project_id = projectId;
+        // Nested under a task: a subtask, in its parent's project. A `#[Project]` reference wins,
+        // since a subtask can't be in another project than its parent.
+        const parent = task.projectRef ? null : parentFor(line);
+        if (parent === "wait") {
+          deferred = true; // created once its parent is, so it isn't made a task of its own
+          continue;
+        }
+        if (parent) {
+          args.parent_id = parent.id;
+          if (parent.projectId) args.project_id = parent.projectId;
+          else if (parent.projectId === null) unknownProject.add(task.pendingUuid);
+        } else {
+          const projectId = task.projectRef ? projectTarget(task.projectRef) : this.projectIdFor(path);
+          if (task.projectRef && !projectId) continue; // project can't be created on this device
+          if (projectId) args.project_id = projectId;
+        }
         if (task.labelRefs.length) {
           const labels = labelNames(task.labelRefs);
           if (!labels) continue; // a label can't be created on this device
@@ -351,6 +393,7 @@ export class SyncEngine {
         else if (task.due) args.due = { date: task.due };
         // Same uuid on retry: Todoist de-duplicates commands it has already applied.
         commands.push({ type: "item_add", uuid: task.pendingUuid, temp_id: task.pendingUuid, args });
+        sentCreates.set(task.pendingUuid, args.project_id as string | undefined);
         continue;
       }
 
@@ -481,10 +524,12 @@ export class SyncEngine {
     const mapping: Record<string, string> = {};
     for (let i = 0; i < commands.length; i += BATCH) {
       const batch = commands.slice(i, i + BATCH);
-      // A project created in an earlier batch is referenced by its real id from here on.
+      // A project or parent task created in an earlier batch is referenced by its real id from here on.
       for (const cmd of batch) {
-        const pid = cmd.args.project_id;
-        if (typeof pid === "string" && mapping[pid]) cmd.args.project_id = mapping[pid];
+        for (const key of ["project_id", "parent_id"]) {
+          const ref = cmd.args[key];
+          if (typeof ref === "string" && mapping[ref]) cmd.args[key] = mapping[ref];
+        }
       }
       const res = await this.client.sync({ commands: batch });
       Object.assign(mapping, res.temp_id_mapping ?? {});
@@ -524,7 +569,7 @@ export class SyncEngine {
       if ((cmd?.args.due as { string?: string } | undefined)?.string) this.wantPull = true; // fetch the date
       const pid = cmd?.args.project_id as string | undefined;
       const projectId = pid ? (mapping[pid] ?? pid) : inbox;
-      if (!cmd || !projectId || !this.state.tasks[realId] || this.state.remote[realId]) continue;
+      if (!cmd || !projectId || unknownProject.has(tmp) || !this.state.tasks[realId] || this.state.remote[realId]) continue;
       const due = cmd.args.due as { date: string } | undefined;
       const labels = (cmd.args.labels as string[] | undefined) ?? [];
       const priority = (cmd.args.priority as number | undefined) ?? 1;

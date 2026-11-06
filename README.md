@@ -122,6 +122,22 @@ When the task next syncs, the words are sent to Todoist, which works out the dat
 - **Titles from Todoist are kept:** once a task is synced, the words of its title stay part of the title. A task renamed in Todoist to "Call Bob today", or imported with that title, keeps "today" in its title, and the same goes for `p1` or `@home` in a title. Only words typed after the title are read as references. If you edit the title in the middle of the line, the whole line is read again, as a new line would be.
 - **Timing:** like other references, it's applied once you move off the line, or straight away with **Sync now**. It needs a connection, since Todoist works out the date.
 
+### Subtasks
+
+A new checkbox nested under another checkbox is created as its subtask in Todoist:
+
+```markdown
+- [ ] Plan trip
+	- [ ] Book flights
+		- [ ] Pick seats
+	- [ ] Book hotel
+```
+
+- **Its parent** is the nearest line above it that's indented less, if that's a synced or syncing checkbox. Nested under a plain bullet, a heading or a `#notodoist` line, it's a task of its own.
+- **Project:** a subtask goes in its parent's project, whatever the note's folder maps to. A `#[Project]` on the subtask's line wins, and makes it a task of its own in that project, since a subtask can't be in another project than its parent.
+- **New parent and subtasks together:** they're created in one go. A subtask whose parent is still being typed waits for it, so it's never created on its own first.
+- **Only when created:** indenting or moving a line that's already synced doesn't change which task it's a subtask of. Change that in Todoist.
+
 ### Importing a task from Todoist
 
 Run **Import task from Todoist** in a note to pick any open Todoist task and insert it at the cursor. Its open subtasks can come with it, indented beneath it in Todoist's order.
@@ -221,7 +237,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used.
 - **Labels:** can be added from a note but not removed. If a label is added in Todoist after this device last pulled and before an `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short.
-- **Subtasks:** imported subtasks keep their place in Todoist, but a nested checkbox you type is created as a task of its own, not as a subtask. Moving lines around in a note doesn't change which task is a subtask of which.
+- **Subtasks:** set when a task is created, or brought in by an import. Indenting, outdenting or moving a synced line later doesn't change it in Todoist, and a subtask added in Todoist to a task in a note doesn't appear in the note on its own.
 - **Not yet supported:** Todoist query blocks.
 
 ## Development

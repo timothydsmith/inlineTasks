@@ -13,6 +13,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 - **Import task from Todoist** command: search your open Todoist tasks and insert one at the cursor, optionally with its open subtasks indented beneath it. The lines are linked straight away and sync both ways.
 - **Import subtasks** setting: ask each time (the default), always import or never import a task's subtasks.
+- A new checkbox nested under another checkbox is created as its subtask in Todoist, in the parent's project. A new task and its new subtasks are created together.
 
 ### Fixed
 - Words in a title set in Todoist, such as "today", "friday" or "p1", are no longer read as a due date or priority when the task is pulled or imported. Only words typed after a synced title count as references.

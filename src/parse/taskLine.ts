@@ -215,6 +215,28 @@ export function findTasks(content: string): TaskLocation[] {
   return out;
 }
 
+/** Width of a line's indentation, a tab counting as 4 columns. */
+function indentWidth(line: string): number {
+  let w = 0;
+  for (const c of /^\s*/.exec(line)![0]) w += c === "\t" ? 4 - (w % 4) : 1;
+  return w;
+}
+
+/**
+ * The checkbox a task line is nested under: the nearest earlier non-blank line that's indented
+ * less, if it's one of `taskLines` (a checkbox outside code and frontmatter). Null for a line
+ * that isn't indented, or whose nearest less-indented line is a plain bullet, heading or text.
+ */
+export function parentLine(lines: string[], line: number, taskLines: Set<number>): number | null {
+  const width = indentWidth(lines[line]);
+  if (width === 0) return null;
+  for (let j = line - 1; j >= 0; j--) {
+    if (!lines[j].trim()) continue;
+    if (indentWidth(lines[j]) < width) return taskLines.has(j) ? j : null;
+  }
+  return null;
+}
+
 /** Find the line index that carries a given marker id (real or pending). */
 export function findLineByMarker(lines: string[], markerId: string): number {
   const needle = `%%td:${markerId}%%`;

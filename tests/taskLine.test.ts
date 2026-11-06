@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findTasks, parseTaskLine, serializeTask, withTitle } from "../src/parse/taskLine";
+import { findTasks, parentLine, parseTaskLine, serializeTask, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -140,6 +140,15 @@ describe("serializeTask", () => {
     expect(serializeTask(t)).toBe("- [/] Half done");
     expect(serializeTask({ ...t, checked: false })).toBe("- [ ] Half done");
     expect(serializeTask({ ...parseTaskLine("- [ ] X")!, checked: true })).toBe("- [x] X");
+  });
+});
+
+describe("parentLine", () => {
+  it("finds the checkbox a line is nested under", () => {
+    const lines = ["- [ ] A", "\t- [ ] B", "", "    - [ ] C", "\t\t- [ ] D", "  - [ ] E", "- note", "\t- [ ] F", "- [ ] G"];
+    const tasks = new Set([0, 1, 3, 4, 5, 7, 8]);
+    const parents = lines.map((_, i) => parentLine(lines, i, tasks));
+    expect(parents).toEqual([null, 0, null, 0, 3, 0, null, null, null]);
   });
 });
 

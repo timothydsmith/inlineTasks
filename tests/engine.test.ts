@@ -41,6 +41,7 @@ class FakeTodoist {
       this.seenUuids.add(c.uuid);
       const a = c.args as Record<string, any>;
       if (typeof a.project_id === "string" && temp_id_mapping[a.project_id]) a.project_id = temp_id_mapping[a.project_id];
+      if (typeof a.parent_id === "string" && temp_id_mapping[a.parent_id]) a.parent_id = temp_id_mapping[a.parent_id];
       if (c.type === "label_add") {
         this.labels.push({ id: `LX${this.labels.length}`, name: a.name, seq: ++this.seq });
       } else if (c.type === "project_add") {
@@ -49,8 +50,11 @@ class FakeTodoist {
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
       } else if (c.type === "item_add") {
         const id = `T${this.nextId++}`;
+        const parent = a.parent_id ? this.items.get(a.parent_id) : undefined;
+        if (a.parent_id && !parent) throw new Error(`unknown parent ${a.parent_id}`);
         this.items.set(id, {
-          id, content: a.content, description: a.description, project_id: a.project_id ?? "inbox",
+          id, content: a.content, description: a.description, project_id: a.project_id ?? parent?.project_id ?? "inbox",
+          ...(parent ? { parent_id: parent.id } : {}),
           checked: false, is_deleted: false, priority: a.priority ?? 1, due: this.due(a.due), labels: a.labels ?? [], seq: ++this.seq,
         });
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
@@ -423,6 +427,66 @@ describe("SyncEngine", () => {
       await engine.pushFile("Note.md");
       expect(todoist.calls.length).toBe(calls);
       expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+  });
+
+  describe("nested checkboxes as subtasks", () => {
+    const parentOf = (content: string) => [...todoist.items.values()].find((i) => i.content === content)?.parent_id;
+
+    it("creates a line nested under a synced task as its subtask, in its project", async () => {
+      await engine.pull(); // learn the projects
+      vault.files.set("Note.md", "- [ ] Plan trip #[Work]");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", vault.files.get("Note.md")! + "\n\t- [ ] Book hotel\n    - [ ] Book flights");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")).toMatchObject({ content: "Book hotel", parent_id: "T1", project_id: "P2" });
+      expect(todoist.items.get("T3")).toMatchObject({ content: "Book flights", parent_id: "T1", project_id: "P2" });
+      expect(state.remote["T2"]?.projectId).toBe("P2"); // chip known without a pull
+    });
+
+    it("creates a new task and its new subtasks together, nested any depth", async () => {
+      vault.files.set("Note.md", "- [ ] Plan trip\n\t- [ ] Book flights\n\t\t- [ ] Pick seats\n\t- [ ] Book hotel");
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(1); // one request
+      expect(parentOf("Plan trip")).toBeUndefined();
+      expect(parentOf("Book flights")).toBe("T1");
+      expect(parentOf("Pick seats")).toBe("T2");
+      expect(parentOf("Book hotel")).toBe("T1");
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Plan trip %%td:T1%%\n\t- [ ] Book flights %%td:T2%%\n\t\t- [ ] Pick seats %%td:T3%%\n\t- [ ] Book hotel %%td:T4%%",
+      );
+    });
+
+    it("waits for a parent that's still being typed", async () => {
+      vault.files.set("Note.md", "- [ ] Plan tr\n\t- [ ] Book hotel");
+      const r = await engine.pushFile("Note.md", { skipLine: 0 });
+      expect(r.deferred).toBe(true);
+      expect(todoist.items.size).toBe(0);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("Plan tr", "Plan trip"));
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.content).toBe("Plan trip");
+      expect(parentOf("Book hotel")).toBe("T1");
+    });
+
+    it("makes top-level tasks of lines not nested under a syncing checkbox", async () => {
+      await engine.pull(); // learn the projects
+      vault.files.set(
+        "Note.md",
+        ["- Shopping", "\t- [ ] Milk", "- [ ] Private #notodoist", "\t- [ ] Eggs", "- [ ] Trip", "\t- [ ] Book train #[Work]", "", "  Some text", "- [ ] Bread"].join("\n"),
+      );
+      await engine.pushFile("Note.md");
+      for (const c of ["Milk", "Eggs", "Book train", "Bread"]) expect(parentOf(c)).toBeUndefined();
+      expect([...todoist.items.values()].find((i) => i.content === "Book train")!.project_id).toBe("P2");
+    });
+
+    it("leaves synced tasks where they are when lines are indented later", async () => {
+      vault.files.set("Note.md", "- [ ] Plan trip\n- [ ] Book hotel");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [ ] Book", "\t- [ ] Book"));
+      const calls = todoist.calls.length;
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(calls);
+      expect(parentOf("Book hotel")).toBeUndefined();
     });
   });
 
