@@ -38,7 +38,7 @@ renders as
 
 | Chip | Meaning |
 |---|---|
-| `#Work`, `#Inbox` | Todoist project. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
+| `#Work`, `#Inbox` | Todoist project, in its Todoist colour. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
 | `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring |
 | `P1` `P2` `P3` | Priority (P4 is not shown). Click it to change it; see [Setting a priority](#setting-a-priority). |
 | `@label`, or a tag icon and count | Todoist labels: the label itself when there's one, or how many when there are more (hover to see them). Click to change the task's labels; see [Labels](#labels). |

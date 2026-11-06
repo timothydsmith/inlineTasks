@@ -25,6 +25,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ### Changed
 - The chip shows `#Inbox` for tasks in the Inbox, rather than no project.
+- The project on a chip is shown in the project's Todoist colour.
 - Typing `@` on a checkbox line opens the label picker, rather than a menu that inserts one label reference.
 
 ### Fixed

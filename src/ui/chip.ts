@@ -2,6 +2,7 @@ import { setIcon } from "obsidian";
 import { PENDING } from "../parse/taskLine";
 import { subtaskCount, type SyncState } from "../sync/state";
 import { taskUrl } from "../todoist/client";
+import { todoistColor } from "../todoist/colors";
 
 // Todoist priority 4 = p1 (urgent) … 1 = p4 (normal)
 const PRIORITY_CLASS: Record<number, string> = { 4: "p1", 3: "p2", 2: "p3" };
@@ -47,8 +48,10 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
   if (meta) {
     const project = state.projects[meta.projectId];
     if (project) {
-      add("inline-tasks-project", `#${project.name}`);
-      (chip.lastChild as HTMLElement).title = "Click to move it to another project";
+      const s = add("inline-tasks-project", `#${project.name}`);
+      s.title = "Click to move it to another project";
+      const color = todoistColor(project.color); // the project's colour in Todoist
+      if (color) s.style.color = color;
     }
     if (meta.due) add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
     const p = PRIORITY_CLASS[meta.priority];
