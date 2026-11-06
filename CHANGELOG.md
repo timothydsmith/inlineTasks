@@ -20,8 +20,11 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - Indenting, outdenting or moving a synced line changes which task it's a subtask of in Todoist, or makes it a top-level task. Moving a task in Todoist, under another task in the same note or out to the top level, moves its line to match. The note wins if a task was moved in both.
 - Clicking the project on a chip opens a project picker to move the task to another project, or to a new one. A subtask moved this way also moves out of its block.
 
+- Label picker, like Todoist's label menu: every label with a tick box, the task's own labels ticked, and several can be ticked or unticked at once. Opened by clicking a label on a chip, or by typing `@` on a checkbox line. Unticking a label removes it from the task, which typed references can't do.
+
 ### Changed
 - The chip shows `#Inbox` for tasks in the Inbox, rather than no project.
+- Typing `@` on a checkbox line opens the label picker, rather than a menu that inserts one label reference.
 
 ### Fixed
 - Words in a title set in Todoist, such as "today", "friday" or "p1", are no longer read as a due date or priority when the task is pulled or imported. Only words typed after a synced title count as references.

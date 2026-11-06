@@ -762,6 +762,54 @@ export class SyncEngine {
   }
 
   /**
+   * Add and remove labels on a synced task, from the label picker. Pulls first, so the change is
+   * made to the task's labels as Todoist has them now: Todoist only takes the whole list, and one
+   * added or removed there since this device last pulled would otherwise be undone. A label that
+   * doesn't exist is created. Returns false if the task isn't one this device can change.
+   */
+  async changeLabels(id: string, add: string[], remove: string[]): Promise<boolean> {
+    await this.pull();
+    return this.exclusive(async () => {
+      const meta = this.state.remote[id];
+      if (!meta || !this.state.tasks[id] || this.state.tasks[id].orphaned) return false;
+      const current = meta.labels ?? [];
+      const drop = new Set(remove.map(labelKey));
+      const next = current.filter((l) => !drop.has(labelKey(l)));
+      const commands: Command[] = [];
+      const created = new Map<string, string>(); // command uuid → label name
+      for (const ref of add) {
+        if (next.some((l) => labelKey(l) === labelKey(ref))) continue;
+        const existing = this.findLabel(ref);
+        const name = existing ?? ref.trim().replace(/\s+/g, " ");
+        if (!name) continue;
+        if (!existing && ![...created.values()].some((n) => labelKey(n) === labelKey(name))) {
+          const tmp = makeUuid();
+          commands.push({ type: "label_add", uuid: tmp, temp_id: tmp, args: { name } });
+          created.set(tmp, name);
+        }
+        next.push(name);
+      }
+      const same = next.length === current.length && next.every((l, i) => l === current[i]);
+      if (same) return true;
+      const update: Command = { type: "item_update", uuid: makeUuid(), args: { id, labels: next } };
+      commands.push(update);
+      const res = await this.client.sync({ commands });
+      for (const [uuid, name] of created) {
+        if (res.sync_status?.[uuid] === "ok") this.state.labels[`${NEW_LABEL}${labelKey(name)}`] = { name };
+      }
+      const status = res.sync_status?.[update.uuid];
+      if (status !== "ok") {
+        const why = status && typeof status === "object" ? status.error : "no answer";
+        throw new Error(`Todoist didn't change the labels: ${why}`);
+      }
+      meta.labels = next;
+      this.log(`changed labels on ${id}: ${next.length ? next.map((l) => `@${l}`).join(" ") : "none"}`);
+      await this.save();
+      return true;
+    });
+  }
+
+  /**
    * Linked tasks this device has no Todoist details for (project, due date, ...), and hasn't yet
    * tried to fetch. Happens when a task was created on another device: its marker arrives here by
    * Obsidian Sync after this device's pulls have already gone past the task. Also tasks whose

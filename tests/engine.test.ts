@@ -1029,6 +1029,48 @@ describe("SyncEngine", () => {
     });
   });
 
+  describe("label picker", () => {
+    beforeEach(async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      todoist.edit("T1", { labels: ["PhoneCall"] });
+      await engine.pull();
+    });
+
+    it("adds and removes labels, using Todoist's spelling", async () => {
+      expect(await engine.changeLabels("T1", ["waiting for"], ["phonecall"])).toBe(true);
+      expect(todoist.items.get("T1")!.labels).toEqual(["Waiting For"]);
+      expect(state.remote.T1.labels).toEqual(["Waiting For"]);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+
+    it("works from the task's labels as Todoist has them now", async () => {
+      todoist.edit("T1", { labels: ["PhoneCall", "Waiting For"] }); // added in Todoist since the last pull
+      await engine.changeLabels("T1", ["Errands"], ["PhoneCall"]);
+      expect(todoist.items.get("T1")!.labels).toEqual(["Waiting For", "Errands"]);
+    });
+
+    it("creates a missing label once", async () => {
+      await engine.changeLabels("T1", ["Errands", "errands"], []);
+      expect(todoist.labels.filter((l) => l.name.toLowerCase() === "errands")).toHaveLength(1);
+      expect(todoist.items.get("T1")!.labels).toEqual(["PhoneCall", "Errands"]);
+      expect(Object.values(state.labels).some((l) => l.name === "Errands")).toBe(true); // listed before the next pull
+    });
+
+    it("sends nothing when nothing changes", async () => {
+      const calls = todoist.calls.length;
+      await engine.changeLabels("T1", ["phonecall"], ["Waiting For"]);
+      expect(todoist.calls.slice(calls).some((c) => c.length)).toBe(false);
+    });
+
+    it("leaves a task deleted in Todoist alone", async () => {
+      state.tasks.T1.orphaned = true;
+      expect(await engine.changeLabels("T1", ["Errands"], [])).toBe(false);
+      expect(todoist.items.get("T1")!.labels).toEqual(["PhoneCall"]);
+    });
+  });
+
   it("does not create tasks on a device with creation disabled", async () => {
     settings.canCreate = false;
     vault.files.set("Note.md", "- [ ] phone task");

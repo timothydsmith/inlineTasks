@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findTasks, parentLine, parseTaskLine, serializeTask, withProjectRef, withTitle } from "../src/parse/taskLine";
+import { findTasks, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -184,5 +184,53 @@ describe("withProjectRef", () => {
 
   it("adds it at the end of a line without a marker", () => {
     expect(withProjectRef("- [ ] Call Bob  ", "Work")).toBe("- [ ] Call Bob #[Work]  ");
+  });
+});
+
+describe("withPickedLabels", () => {
+  const none = () => false;
+
+  it("replaces the @ with the picked labels, cursor after them", () => {
+    const line = "- [ ] Call Bob @";
+    const out = withPickedLabels(line, line.length - 1, ["PhoneCall", "Waiting For"], none);
+    expect(out.line).toBe("- [ ] Call Bob @PhoneCall @[Waiting For] ");
+    expect(out.cursor).toBe(out.line.length);
+  });
+
+  it("keeps one space before the rest of the line", () => {
+    const line = "- [ ] Call Bob @ today";
+    const out = withPickedLabels(line, 15, ["Errands"], none);
+    expect(out.line).toBe("- [ ] Call Bob @Errands today");
+    expect(out.line.slice(0, out.cursor)).toBe("- [ ] Call Bob @Errands");
+  });
+
+  it("takes out the references to unticked labels, matching any spelling", () => {
+    const line = "- [ ] Call @phonecall Bob @[waiting for] @";
+    const drop = (n: string) => n.toLowerCase() === "phonecall";
+    const out = withPickedLabels(line, line.length - 1, ["Errands"], drop);
+    expect(out.line).toBe("- [ ] Call Bob @[waiting for] @Errands ");
+    expect(out.cursor).toBe(out.line.length);
+  });
+
+  it("just removes the @ when nothing is added", () => {
+    expect(withPickedLabels("- [ ] Call Bob @ today", 15, [], none)).toEqual({ line: "- [ ] Call Bob today", cursor: 15 });
+    expect(withPickedLabels("- [ ] Call Bob @", 15, [], none)).toEqual({ line: "- [ ] Call Bob", cursor: 14 });
+    expect(withPickedLabels("- [ ] Call Bob %%td:T1%% @", 25, [], none)).toEqual({ line: "- [ ] Call Bob %%td:T1%%", cursor: 24 });
+  });
+});
+
+describe("startsLabel", () => {
+  it("opens on an @ of its own, after the checkbox of a line that syncs", () => {
+    expect(startsLabel("- [ ] Call Bob @", 15)).toBe(true);
+    expect(startsLabel("- [ ] @", 6)).toBe(true);
+    expect(startsLabel("\t- [ ] Call @ Bob %%td:T1%%", 12)).toBe(true);
+  });
+
+  it("doesn't open inside a word, on other lines, or where labels mean nothing", () => {
+    expect(startsLabel("- [ ] Email bob@", 15)).toBe(false); // email address
+    expect(startsLabel("- [ ] Call @Bob", 11)).toBe(false); // editing a reference
+    expect(startsLabel("- Call Bob @", 11)).toBe(false); // not a checkbox
+    expect(startsLabel("- [x] Done @", 11)).toBe(false); // ticked and never synced
+    expect(startsLabel("- [ ] Private #notodoist @", 25)).toBe(false);
   });
 });

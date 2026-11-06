@@ -266,3 +266,35 @@ export function withProjectRef(line: string, name: string): string {
   const at = marker ? marker.index : line.trimEnd().length;
   return `${line.slice(0, at)} #[${name}]${line.slice(at)}`;
 }
+
+/**
+ * The line after the label picker opened from the `@` at `at` closed: the `@` replaced by
+ * references to the added labels, and references to the labels `drop` names taken out. Returns the
+ * line and where the cursor goes: after the new references, ready to keep typing.
+ */
+export function withPickedLabels(line: string, at: number, add: string[], drop: (name: string) => boolean): { line: string; cursor: number } {
+  const strip = (s: string) => s.replace(LABEL_RE_G, (m, _pre, bracketed, word) => (drop(String(bracketed ?? word).trim()) ? "" : m));
+  let before = strip(line.slice(0, at));
+  let after = strip(line.slice(at + 1));
+  let refs = add.map(labelRef).join(" ");
+  if (refs && !/^\s/.test(after)) refs += " "; // a space after the references, to keep typing
+  if (!refs && !after.trim()) before = before.trimEnd(); // the `@` ended the line: no space left behind
+  else if (!refs && /\s$/.test(before)) after = after.replace(/^\s+/, ""); // no double space where the `@` was
+  return { line: before + refs + after, cursor: before.length + refs.length };
+}
+
+const CHECKBOX_PREFIX_RE = /^\s*(?:[-*+]|\d+[.)])\s+\[.\]/;
+
+/**
+ * Whether the `@` at `ch` in `line` starts a label: on a checkbox line that syncs, after the
+ * checkbox, as a word of its own (after a space, with a space or the end of the line after it),
+ * so an email address or `name@` doesn't open the picker.
+ */
+export function startsLabel(line: string, ch: number): boolean {
+  if (line.charAt(ch) !== "@") return false;
+  const task = parseTaskLine(line);
+  if (!task || /(^|\s)#notodoist(\s|$)/.test(line)) return false;
+  if (task.checked && !task.todoistId && !task.pendingUuid) return false; // never syncs, so a label means nothing
+  if (ch < (CHECKBOX_PREFIX_RE.exec(line)?.[0].length ?? 0)) return false;
+  return /\s/.test(line.charAt(ch - 1)) && (ch + 1 === line.length || /\s/.test(line.charAt(ch + 1)));
+}

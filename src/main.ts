@@ -1,8 +1,8 @@
 import { EditorView } from "@codemirror/view";
-import { Editor, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
+import { Editor, editorInfoField, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
-import { SyncEngine, type VaultAdapter } from "./sync/engine";
-import { blockEnd, findLineByMarker, parseTaskLine, withProjectRef } from "./parse/taskLine";
+import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
+import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withProjectRef } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { emptyState, subtaskCount, type SyncState } from "./sync/state";
@@ -13,7 +13,8 @@ import { ProjectModal } from "./ui/projectModal";
 import { SubtaskChoiceModal } from "./ui/subtaskChoiceModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
 import { localEditTracker } from "./ui/localEdits";
-import { LabelSuggest } from "./ui/labelSuggest";
+import { LabelModal, type LabelPick } from "./ui/labelModal";
+import { labelTrigger } from "./ui/labelTrigger";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { readingChipProcessor } from "./ui/readingChip";
 
@@ -37,6 +38,8 @@ export default class InlineTasksPlugin extends Plugin {
   engine!: SyncEngine;
 
   private dirty = new Set<string>();
+  /** Notes with a label picker open from a typed `@`: not pushed until it closes, so the `@` never reaches a title. */
+  private picking = new Set<string>();
   private pushTimer: number | null = null;
   private pullTimer: number | null = null;
   private chipVersion = 0;
@@ -88,7 +91,7 @@ export default class InlineTasksPlugin extends Plugin {
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id) };
+    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id) };
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, chipActions));
     this.registerEditorExtension(
       localEditTracker(
@@ -263,7 +266,59 @@ export default class InlineTasksPlugin extends Plugin {
     const enabled = (file: TFile | null) =>
       !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path);
     this.registerEditorSuggest(new ProjectSuggest(this.app, () => this.state, enabled));
-    this.registerEditorSuggest(new LabelSuggest(this.app, () => this.state, enabled));
+    this.registerEditorExtension(labelTrigger(enabled, (view, pos) => this.labelsFromAt(view, pos)));
+  }
+
+  // ------------------------------------------------------------ label picker
+
+  /** Pick a synced task's labels, from a click on one of its chip's labels. */
+  private changeLabels(id: string): void {
+    if (!this.engine.isLinked(id) || !this.settings.apiToken) return;
+    new LabelModal(this.app, this.state, this.state.remote[id]?.labels ?? [], (pick) => {
+      if (pick.add.length || pick.remove.length) void this.applyLabels(id, pick);
+    }).open();
+  }
+
+  private async applyLabels(id: string, pick: LabelPick): Promise<void> {
+    await this.guard(() => this.engine.changeLabels(id, pick.add, pick.remove), true);
+    this.refresh();
+  }
+
+  /**
+   * `@` was typed on a checkbox line at `pos`: open the label picker. A synced task's labels are
+   * changed in Todoist when it closes, and the `@` is removed. On a line not synced yet, the `@` is
+   * replaced by references to the labels picked, which sync applies when it creates the task. With
+   * nothing picked, what was typed in the search box is left after the `@`, as if typed there.
+   */
+  private labelsFromAt(view: EditorView, pos: number): void {
+    const task = parseTaskLine(view.state.doc.lineAt(pos).text);
+    if (!task) return;
+    const id = task.todoistId && this.engine.isLinked(task.todoistId) ? task.todoistId : null;
+    const current = id ? (this.state.remote[id]?.labels ?? []) : task.labelRefs.map((r) => this.engine.findLabel(r) ?? r);
+    const path = view.state.field(editorInfoField, false)?.file?.path;
+    if (path) this.picking.add(path);
+    new LabelModal(this.app, this.state, current, (pick) => {
+      if (path) this.picking.delete(path);
+      const changed = pick.add.length > 0 || pick.remove.length > 0;
+      const doc = view.state.doc;
+      if (pos < doc.length && doc.sliceString(pos, pos + 1) === "@") {
+        const line = doc.lineAt(pos);
+        const at = pos - line.from;
+        const drop = new Set(pick.remove.map(labelKey));
+        const next = !changed
+          ? { line: line.text.slice(0, at + 1) + pick.query + line.text.slice(at + 1), cursor: at + 1 + pick.query.length }
+          : id
+            ? withPickedLabels(line.text, at, [], () => false)
+            : withPickedLabels(line.text, at, pick.add, (n) => drop.has(labelKey(n)));
+        view.dispatch({
+          changes: next.line === line.text ? undefined : { from: line.from, to: line.to, insert: next.line },
+          selection: { anchor: line.from + next.cursor },
+          userEvent: "input",
+        });
+      }
+      view.focus();
+      if (id && changed) void this.applyLabels(id, pick);
+    }).open();
   }
 
   // ------------------------------------------------------------ import
@@ -475,6 +530,10 @@ export default class InlineTasksPlugin extends Plugin {
     this.dirty.clear();
     for (const path of paths) {
       if (!(this.app.vault.getAbstractFileByPath(path) instanceof TFile)) continue;
+      if (this.picking.has(path)) {
+        this.dirty.add(path); // pushed once the label picker closes
+        continue;
+      }
       const status = this.origin.status(path, Date.now());
       // Changed on another device (or by another app): let that device push it first.
       if (!force && status.hold) {

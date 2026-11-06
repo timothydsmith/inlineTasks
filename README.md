@@ -20,7 +20,7 @@ renders as
   - Edit the text in Obsidian and Todoist updates.
   - If both sides edited the same field, the most recent edit wins.
 - **The chip** shows project, due date (red when overdue, ↻ when recurring), priority and labels.
-  - Click it to open the task in Todoist. Click the project to move the task to another one, or the `↳` subtask count to add missing subtasks.
+  - Click it to open the task in Todoist. Click the project to move the task to another one, a label to change its labels, or the `↳` subtask count to add missing subtasks.
   - To see or edit the raw marker, move the cursor onto it with the arrow keys, or click just beside the chip.
 - **Never deletes anything:**
   - Deleting a line in Obsidian only unlinks the task.
@@ -41,7 +41,7 @@ renders as
 | `#Work`, `#Inbox` | Todoist project. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
 | `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring |
 | `P1` `P2` `P3` | Priority (P4 is not shown) |
-| `@label` | Todoist labels |
+| `@label` | Todoist labels. Click one to change the task's labels; see [Labels](#labels). |
 | `↳ 2` | Open subtasks in Todoist, whether or not they're in a note (hidden when there are none). Only direct subtasks count, not theirs. Click it to add the ones that aren't in a note yet; see [Subtasks](#subtasks). |
 | grey icon | Task is completed |
 | *syncing…* | Create is in flight |
@@ -65,9 +65,18 @@ When the task next syncs, it's filed in that project and the reference is remove
 - **Precedence:** a reference beats folder mappings and `todoist_project:` frontmatter.
 - **Ordinary tags are unaffected.** Only `#[` opens the project menu, so `#tags` get Obsidian's usual tag suggestions and never file a task.
 
-### Adding labels
+### Labels
 
-Type `@` on a checkbox line to open a menu of your Todoist labels, then keep typing to filter. Picking one inserts a label reference. Names with spaces or punctuation are bracketed:
+Type `@` on a checkbox line, as a word of its own, to open the label picker. It lists your Todoist labels with tick boxes, like Todoist's label menu, with the task's own labels ticked. Clicking a label on a task's chip opens the same picker.
+
+- **Pick:** type to filter, then press Enter or click to tick or untick a label. The picker stays open so you can pick several, and the search clears after each one.
+- **Apply:** press Esc or click outside the picker when you're done.
+  - **Synced task:** its labels change in Todoist straight away, including any you unticked, and the `@` is removed. The picker works from the task's labels as Todoist has them at that moment, so a label added in Todoist meanwhile isn't lost.
+  - **Line not synced yet:** the `@` is replaced by references to the labels you ticked, applied when the task is created. Unticking a label removes its reference from the line.
+  - **Nothing ticked or unticked:** anything typed in the search box is left on the line after the `@`, as if you'd typed it there.
+- **Label doesn't exist:** keep typing the new name, and the picker offers **Create label “…”**.
+
+You can also type label references by hand. Names with spaces or punctuation are bracketed:
 
 ```markdown
 - [ ] Ring the plumber @PhoneCall @[Waiting For]
@@ -75,8 +84,8 @@ Type `@` on a checkbox line to open a menu of your Todoist labels, then keep typ
 
 When the task next syncs, the labels are added to it and the references are removed from the line. The chip shows the task's labels from then on.
 
-- **Adding only:** references add labels and never remove any. Remove a label in Todoist.
-- **Label doesn't exist:** keep typing the new name, and the menu offers **Create label “…”**. A reference you type by hand to a missing label also creates it.
+- **Adding only:** typed references add labels and never remove any. Use the picker to remove one.
+- **Label doesn't exist:** a reference to a missing label creates it.
 - **Matching** ignores case and extra spaces, and uses the label's own spelling in Todoist.
 - **Where `@` counts:** only at the start of the line or after a space, so `bob@example.com` is left alone. A bare `@name` stops at a space and doesn't include a trailing full stop or comma. Use `@[…]` for anything else.
 - **Timing:** like project references, labels are applied once you move off the line, or straight away with **Sync now**. A task linked on another device waits until this device has fetched its current labels, so none are dropped.
@@ -244,7 +253,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Due times:** a time set in Todoist is shown as a date only. Changing the date in Obsidian replaces the due date with a date-only one, so the time is lost.
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used, and the chip's project picker won't move a task to either. Nor will it move one to a project whose name contains `]`.
-- **Labels:** can be added from a note but not removed. If a label is added in Todoist after this device last pulled and before an `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short.
+- **Labels:** typed references only add labels; removing one needs the picker. If a label is added in Todoist after this device last pulled and before a typed `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short. The picker pulls first, so it doesn't have this problem. A task with no labels has none on its chip to click: type `@` on its line instead.
 - **Subtasks:** a subtask added in Todoist to a task in a note appears only when you add it (see [Subtasks](#subtasks)). A task moved in Todoist under a task in another note, or in no note, keeps its place; lines aren't moved between notes.
 - **Order:** only subtasks are kept in order. The order of top-level tasks in a note isn't synced, since one note can hold tasks from several projects. The first time a task's subtasks are seen after updating, their order is just recorded: if the note and Todoist disagree then, they're left until one side is reordered. Lines synced before this version are taken as they're nested the first time each note syncs.
 - **Not yet supported:** Todoist query blocks.

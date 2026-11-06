@@ -24,7 +24,7 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
 
   if (markerId.startsWith(PENDING)) {
     chip.classList.add("is-pending");
-    add("inline-tasks-label", "syncing…");
+    add("inline-tasks-status", "syncing…");
     chip.title = "Creating in Todoist";
     return chip;
   }
@@ -37,7 +37,7 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
 
   if (rec?.orphaned) {
     chip.classList.add("is-orphaned");
-    add("inline-tasks-label", "deleted in Todoist");
+    add("inline-tasks-status", "deleted in Todoist");
     chip.title = "This task was deleted in Todoist. Remove the marker to unlink it.";
     return chip;
   }
@@ -51,7 +51,10 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     if (meta.due) add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
     const p = PRIORITY_CLASS[meta.priority];
     if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase());
-    for (const l of meta.labels ?? []) add("inline-tasks-label", `@${l}`);
+    for (const l of meta.labels ?? []) {
+      add("inline-tasks-label", `@${l}`);
+      (chip.lastChild as HTMLElement).title = "Click to change its labels";
+    }
     if (meta.checked) chip.classList.add("is-done");
   }
   const subtasks = subtaskCount(state, markerId);
