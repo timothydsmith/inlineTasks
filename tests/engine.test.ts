@@ -455,6 +455,11 @@ describe("SyncEngine", () => {
         "  \t- [ ] Book hotel %%td:B%%",
       ]);
       expect(items.map((i) => i.id)).toEqual(["A", "C", "D", "B"]);
+
+      // Without subtasks: just the task.
+      const alone = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "", "\t", false);
+      expect(alone.lines).toEqual(["- [ ] Plan trip today 📅 2030-02-01 %%td:A%%"]);
+      expect(alone.items.map((i) => i.id)).toEqual(["A"]);
     });
 
     it("links imported lines, so they sync as existing tasks", async () => {

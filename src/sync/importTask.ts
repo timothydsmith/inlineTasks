@@ -2,9 +2,9 @@ import { parseTaskLine, serializeTask } from "../parse/taskLine";
 import { dueDate, type TodoistItem } from "../todoist/client";
 
 /**
- * Lines for importing an existing Todoist task into a note: the task, then its open subtasks
- * beneath it, each level indented one `tab` further, in Todoist's order. Subtasks already linked
- * to a line elsewhere are left out, with their own subtasks.
+ * Lines for importing an existing Todoist task into a note: the task, then (unless `withSubtasks`
+ * is false) its open subtasks beneath it, each level indented one `tab` further, in Todoist's
+ * order. Subtasks already linked to a line elsewhere are left out, with their own subtasks.
  */
 export function importLines(
   root: TodoistItem,
@@ -12,7 +12,9 @@ export function importLines(
   isLinked: (id: string) => boolean,
   indent: string,
   tab: string,
+  withSubtasks = true,
 ): { lines: string[]; items: TodoistItem[] } {
+  if (!withSubtasks) return { lines: [taskLine(root, indent)], items: [root] };
   const children = new Map<string, TodoistItem[]>();
   for (const it of open) {
     if (!it.parent_id) continue;

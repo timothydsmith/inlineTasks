@@ -5,9 +5,10 @@ import { SyncEngine, type VaultAdapter } from "./sync/engine";
 import { importLines } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { emptyState, type SyncState } from "./sync/state";
-import { TodoistClient, TodoistError, type HttpFn } from "./todoist/client";
+import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { ImportModal } from "./ui/importModal";
+import { SubtaskChoiceModal } from "./ui/subtaskChoiceModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
 import { localEditTracker } from "./ui/localEdits";
 import { LabelSuggest } from "./ui/labelSuggest";
@@ -254,35 +255,46 @@ export default class InlineTasksPlugin extends Plugin {
 
   // ------------------------------------------------------------ import
 
-  /** Pick an open Todoist task and insert it, with its subtasks, at the cursor. */
+  /**
+   * Pick an open Todoist task and insert it at the cursor, with its open subtasks if the
+   * **Import subtasks** setting says so (or, set to ask, if the user chooses them).
+   */
   private async importTask(editor: Editor, path: string): Promise<void> {
     const items = await this.guard(() => this.engine.openTasks(), true);
     if (!items) return;
-    new ImportModal(this.app, this.state, items, (id) => this.engine.isLinked(id), (root) => {
-      void this.guard(async () => {
-        const cursor = editor.getCursor();
-        const current = editor.getLine(cursor.line);
-        const list = /^(\s*)(?:[-*+]|\d+[.)])(?:\s+\[.\])?\s*(.*)$/.exec(current);
-        // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
-        const replace = current.trim() === "" || (!!list && list[2] === "");
-        const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
-        const tab = config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
-        // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
-        const { lines, items: imported } = importLines(root, items, (id) => this.engine.isLinked(id), indent, tab);
-        await this.engine.registerImport(path, imported.map((item, i) => ({ item, line: lines[i] })));
-        const text = lines.join("\n");
-        if (replace) {
-          editor.replaceRange(text, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: current.length });
-        } else {
-          editor.replaceRange(`\n${text}`, { line: cursor.line, ch: current.length });
-        }
-        const last = cursor.line + (replace ? 0 : 1) + lines.length - 1;
-        editor.setCursor({ line: last, ch: editor.getLine(last).length });
-        this.refresh();
-      }, true);
+    const isLinked = (id: string) => this.engine.isLinked(id);
+    new ImportModal(this.app, this.state, items, isLinked, (root) => {
+      const subtasks = importLines(root, items, isLinked, "", "").items.length - 1;
+      const mode = this.settings.importSubtasks;
+      const insert = (withSubtasks: boolean) => void this.guard(() => this.insertImport(editor, path, root, items, withSubtasks), true);
+      if (!subtasks || mode !== "ask") insert(mode !== "never");
+      else new SubtaskChoiceModal(this.app, root.content, subtasks, insert).open();
     }).open();
+  }
+
+  /** Insert an imported task (and its subtasks) at the cursor: see the README's Importing a task. */
+  private async insertImport(editor: Editor, path: string, root: TodoistItem, open: TodoistItem[], withSubtasks: boolean): Promise<void> {
+    const cursor = editor.getCursor();
+    const current = editor.getLine(cursor.line);
+    const list = /^(\s*)(?:[-*+]|\d+[.)])(?:\s+\[.\])?\s*(.*)$/.exec(current);
+    // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
+    const replace = current.trim() === "" || (!!list && list[2] === "");
+    const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
+    const tab = config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
+    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, tab, withSubtasks);
+    // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
+    await this.engine.registerImport(path, items.map((item, i) => ({ item, line: lines[i] })));
+    const text = lines.join("\n");
+    if (replace) {
+      editor.replaceRange(text, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: current.length });
+    } else {
+      editor.replaceRange(`\n${text}`, { line: cursor.line, ch: current.length });
+    }
+    const last = cursor.line + (replace ? 0 : 1) + lines.length - 1;
+    editor.setCursor({ line: last, ch: editor.getLine(last).length });
+    this.refresh();
   }
 
   // ------------------------------------------------------------ log

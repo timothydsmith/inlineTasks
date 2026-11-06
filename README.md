@@ -124,12 +124,12 @@ When the task next syncs, the words are sent to Todoist, which works out the dat
 
 ### Importing a task from Todoist
 
-Run **Import task from Todoist** in a note to pick any open Todoist task and insert it at the cursor, with its open subtasks indented beneath it in Todoist's order.
+Run **Import task from Todoist** in a note to pick any open Todoist task and insert it at the cursor. Its open subtasks can come with it, indented beneath it in Todoist's order.
 
 - **Finding it:** type to search the task's title, project and due date. With nothing typed, tasks are listed by due date, soonest first. Each shows its project, due date and number of subtasks. Tasks already linked to a line in your vault aren't offered.
 - **Where it goes:** on an empty line or an empty list item, the task replaces it. Otherwise it goes on the next line, indented like the current list item.
 - **Linked straight away:** the lines carry the tasks' markers, so they sync like any other: the chip shows each task's project, labels and priority, and edits on either side sync both ways. Nothing is created or changed in Todoist by the import.
-- **Subtasks:** a subtask already linked to a line elsewhere is left out, along with its own subtasks.
+- **Subtasks:** the **Import subtasks** setting decides whether they come too. Set to **Ask each time** (the default), importing a task that has open subtasks asks whether to bring them: **With subtasks** or **Task only**. Press Esc to cancel the import. **Always import** and **Never import** skip the question. A subtask already linked to a line elsewhere is left out, along with its own subtasks. A subtask you leave behind can be imported on its own later.
 
 ### Excluding things
 - **Folders or notes** listed in settings (defaults to `Templates`). An entry matches a folder and everything inside it, or a single note by its path, e.g. `Journal/Private.md`.
@@ -186,6 +186,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | Excluded folders | `Templates` | One folder or note path per line. |
 | Folder → project | none | One `Folder = Project` per line. The longest matching folder wins. A note's `todoist_project:` frontmatter overrides it, and a `#[Project]` reference on a line overrides both. Unknown project names fall back to the Inbox. |
 | Pull interval (minutes) | 5 | Minimum 1. |
+| Import subtasks | Ask each time | Whether **Import task from Todoist** brings a task's open subtasks: **Ask each time**, **Always import** or **Never import**. |
 | This device creates tasks | on | Stored per device, not in `data.json`. Off means this device never creates tasks, even ones typed here. |
 | Create tasks for changes from other devices or apps | on for desktop, off for mobile | Stored per device. See [Multiple devices](#multiple-devices-obsidian-sync). |
 | Backfill existing checkboxes | — | Opens the backfill preview. |
