@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findTasks, parseTaskLine, serializeTask } from "../src/parse/taskLine";
+import { findTasks, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -48,6 +48,58 @@ describe("parseTaskLine", () => {
     expect(parseTaskLine("- [ ] @PhoneCall")!.excluded).toBe(true); // nothing to create
   });
 
+  it("extracts a p1–p4 priority from the text", () => {
+    const t = parseTaskLine("- [ ] Plan p2 roadmap P1 📅 2026-11-10")!;
+    expect(t.priorityRef).toBe(1); // last one wins, either case
+    expect(t.text).toBe("Plan roadmap");
+    for (const line of ["- [ ] Review mp3 files", "- [ ] Use #p1 tag", "- [ ] Win p1st", "- [ ] Try p5", "- [ ] Ref (p1)"]) {
+      expect(parseTaskLine(line)!.priorityRef).toBeNull();
+    }
+  });
+
+  it("extracts a due date in words", () => {
+    const cases: [string, string | null, string][] = [
+      ["- [ ] Call Bob today about it", "today", "Call Bob about it"],
+      ["- [ ] Send invoice Next  Friday.", "Next Friday", "Send invoice ."],
+      ["- [ ] Pay rent every month", "every month", "Pay rent"],
+      ["- [ ] Gym every monday", "every monday", "Gym"],
+      ["- [ ] Plan next week", "next week", "Plan"],
+      ["- [ ] Renew passport 15/11", "15/11", "Renew passport"],
+      ["- [ ] Renew 1/2/2027", "1/2/2027", "Renew"],
+      ["- [ ] Lunch friday then saturday", "saturday", "Lunch then"], // last wins
+      ["- [ ] Buy sun cream on sat", null, "Buy sun cream on sat"], // no abbreviations
+      ["- [ ] Check 31/13 and 15/11x", null, "Check 31/13 and 15/11x"],
+      ["- [ ] Fridays are long", null, "Fridays are long"],
+    ];
+    for (const [line, dueRef, text] of cases) {
+      const t = parseTaskLine(line)!;
+      expect([t.dueRef, t.text]).toEqual([dueRef, text]);
+    }
+  });
+
+  it("reads only what follows a synced title for references", () => {
+    const line = "- [ ] Call Bob today p2 📅 2026-11-10 %%td:abc%%";
+    const plain = parseTaskLine(line)!;
+    expect([plain.text, plain.dueRef, plain.priorityRef]).toEqual(["Call Bob", "today", 2]);
+    expect(plain.content).toBe("Call Bob today p2");
+    const whole = withTitle(plain, "Call Bob today p2");
+    expect([whole.text, whole.dueRef, whole.priorityRef]).toEqual(["Call Bob today p2", null, null]);
+    const tail = withTitle(plain, "Call Bob  today");
+    expect([tail.text, tail.dueRef, tail.priorityRef]).toEqual(["Call Bob today", null, 2]);
+    const edited = withTitle(plain, "Ring Bob today");
+    expect(edited).toBe(plain); // title edited in the middle: read in full
+    expect(serializeTask(whole)).toBe(line);
+    expect(serializeTask(tail)).toBe(line);
+  });
+
+  it("doesn't read references inside a bracketed name", () => {
+    const t = parseTaskLine("- [ ] Plan #[Phase p1] @[Errands @home]")!;
+    expect(t.projectRef).toBe("Phase p1");
+    expect(t.labelRefs).toEqual(["Errands @home"]);
+    expect(t.priorityRef).toBeNull();
+    expect(t.text).toBe("Plan");
+  });
+
   it("ignores non-task lines", () => {
     expect(parseTaskLine("- just a bullet")).toBeNull();
     expect(parseTaskLine("[ ] no list marker")).toBeNull();
@@ -77,11 +129,26 @@ describe("serializeTask", () => {
     expect(serializeTask({ ...t, labelRefs: ["done."] })).toBe("- [ ] Call Bob @[done.] #[Work] 📅 2026-11-10");
   });
 
+  it("writes a priority straight after the text", () => {
+    const t = parseTaskLine("- [ ] Call p2 Bob @PhoneCall 📅 2026-11-10 %%td:abc%%")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob p2 @PhoneCall 📅 2026-11-10 %%td:abc%%");
+    expect(serializeTask({ ...t, priorityRef: null })).toBe("- [ ] Call Bob @PhoneCall 📅 2026-11-10 %%td:abc%%");
+  });
+
   it("preserves custom checked statuses but unchecks to space", () => {
     const t = parseTaskLine("- [/] Half done")!;
     expect(serializeTask(t)).toBe("- [/] Half done");
     expect(serializeTask({ ...t, checked: false })).toBe("- [ ] Half done");
     expect(serializeTask({ ...parseTaskLine("- [ ] X")!, checked: true })).toBe("- [x] X");
+  });
+});
+
+describe("parentLine", () => {
+  it("finds the checkbox a line is nested under", () => {
+    const lines = ["- [ ] A", "\t- [ ] B", "", "    - [ ] C", "\t\t- [ ] D", "  - [ ] E", "- note", "\t- [ ] F", "- [ ] G"];
+    const tasks = new Set([0, 1, 3, 4, 5, 7, 8]);
+    const parents = lines.map((_, i) => parentLine(lines, i, tasks));
+    expect(parents).toEqual([null, 0, null, 0, 3, 0, null, null, null]);
   });
 });
 
@@ -104,5 +171,66 @@ describe("findTasks", () => {
       [3, "one"],
       [10, "two"],
     ]);
+  });
+});
+
+describe("withProjectRef", () => {
+  it("adds the reference just before the marker, where it's read as a project", () => {
+    const line = "\t- [ ] Call Bob 📅 2026-11-10 %%td:T1%%";
+    const out = withProjectRef(line, "Home Reno");
+    expect(out).toBe("\t- [ ] Call Bob 📅 2026-11-10 #[Home Reno] %%td:T1%%");
+    expect(parseTaskLine(out)).toMatchObject({ projectRef: "Home Reno", due: "2026-11-10", todoistId: "T1" });
+  });
+
+  it("adds it at the end of a line without a marker", () => {
+    expect(withProjectRef("- [ ] Call Bob  ", "Work")).toBe("- [ ] Call Bob #[Work]  ");
+  });
+});
+
+describe("withPickedLabels", () => {
+  const none = () => false;
+
+  it("replaces the @ with the picked labels, cursor after them", () => {
+    const line = "- [ ] Call Bob @";
+    const out = withPickedLabels(line, line.length - 1, ["PhoneCall", "Waiting For"], none);
+    expect(out.line).toBe("- [ ] Call Bob @PhoneCall @[Waiting For] ");
+    expect(out.cursor).toBe(out.line.length);
+  });
+
+  it("keeps one space before the rest of the line", () => {
+    const line = "- [ ] Call Bob @ today";
+    const out = withPickedLabels(line, 15, ["Errands"], none);
+    expect(out.line).toBe("- [ ] Call Bob @Errands today");
+    expect(out.line.slice(0, out.cursor)).toBe("- [ ] Call Bob @Errands");
+  });
+
+  it("takes out the references to unticked labels, matching any spelling", () => {
+    const line = "- [ ] Call @phonecall Bob @[waiting for] @";
+    const drop = (n: string) => n.toLowerCase() === "phonecall";
+    const out = withPickedLabels(line, line.length - 1, ["Errands"], drop);
+    expect(out.line).toBe("- [ ] Call Bob @[waiting for] @Errands ");
+    expect(out.cursor).toBe(out.line.length);
+  });
+
+  it("just removes the @ when nothing is added", () => {
+    expect(withPickedLabels("- [ ] Call Bob @ today", 15, [], none)).toEqual({ line: "- [ ] Call Bob today", cursor: 15 });
+    expect(withPickedLabels("- [ ] Call Bob @", 15, [], none)).toEqual({ line: "- [ ] Call Bob", cursor: 14 });
+    expect(withPickedLabels("- [ ] Call Bob %%td:T1%% @", 25, [], none)).toEqual({ line: "- [ ] Call Bob %%td:T1%%", cursor: 24 });
+  });
+});
+
+describe("startsLabel", () => {
+  it("opens on an @ of its own, after the checkbox of a line that syncs", () => {
+    expect(startsLabel("- [ ] Call Bob @", 15)).toBe(true);
+    expect(startsLabel("- [ ] @", 6)).toBe(true);
+    expect(startsLabel("\t- [ ] Call @ Bob %%td:T1%%", 12)).toBe(true);
+  });
+
+  it("doesn't open inside a word, on other lines, or where labels mean nothing", () => {
+    expect(startsLabel("- [ ] Email bob@", 15)).toBe(false); // email address
+    expect(startsLabel("- [ ] Call @Bob", 11)).toBe(false); // editing a reference
+    expect(startsLabel("- Call Bob @", 11)).toBe(false); // not a checkbox
+    expect(startsLabel("- [x] Done @", 11)).toBe(false); // ticked and never synced
+    expect(startsLabel("- [ ] Private #notodoist @", 25)).toBe(false);
   });
 });

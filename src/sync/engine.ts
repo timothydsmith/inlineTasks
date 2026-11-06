@@ -1,14 +1,17 @@
 import {
   findLineByMarker,
   findTasks,
+  parentLine,
   parseTaskLine,
   PENDING,
   serializeTask,
+  withTitle,
   type ParsedTask,
   type TaskFields,
 } from "../parse/taskLine";
 import { dueDate, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
 import { isEmpty, merge } from "./merge";
+import { compareSiblings, inOrderOf, moveBlock, reorderBlocks, reorderKeys, sameOrder, type Sibling } from "./order";
 import type { SyncState } from "./state";
 
 /** The slice of Obsidian the engine needs. Implemented in main.ts; faked in tests. */
@@ -26,6 +29,8 @@ export interface EngineSettings {
   folderProjects: { folder: string; project: string }[];
   /** Whether this device may create new Todoist tasks (guards against duplicate creation across devices). */
   canCreate: boolean;
+  /** One level of list indentation, for lines the sync re-indents. Defaults to a tab. */
+  indent?: string;
 }
 
 export interface PushOptions {
@@ -53,6 +58,10 @@ export class SyncEngine {
   private busy: Promise<unknown> = Promise.resolve();
   /** Task ids we've already run a full sync for, to fetch their details (see missingDetails). */
   private fetchTried = new Set<string>();
+  /** A push sent something only a pull can complete (a due date in words). See takePullRequest. */
+  private wantPull = false;
+  /** Task ids whose place among their siblings we've already read afresh this session (see syncOrder). */
+  private orderTried = new Set<string>();
 
   constructor(
     private client: TodoistClient,
@@ -162,12 +171,63 @@ export class SyncEngine {
         if (!this.isFileEligible(path)) continue;
         for (const { task } of findTasks(await this.vault.read(path))) {
           if (!task.todoistId || this.state.tasks[task.todoistId]) continue;
-          this.state.tasks[task.todoistId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
+          // The line's words are its title as synced (see withTitle), not references.
+          this.state.tasks[task.todoistId] = { path, base: { text: task.content, checked: task.checked, due: task.due } };
           n++;
         }
       }
       if (n) await this.save();
       return n;
+    });
+  }
+
+  // ---------------------------------------------------------------- import
+
+  /** Whether a Todoist task is already linked to a line in the vault. */
+  isLinked(id: string): boolean {
+    const rec = this.state.tasks[id];
+    return !!rec && !rec.orphaned;
+  }
+
+  /**
+   * All open Todoist tasks, for the import picker. A full read that leaves the sync token alone,
+   * so the next pull still sees everything changed since the last one.
+   */
+  openTasks(): Promise<TodoistItem[]> {
+    return this.exclusive(async () => {
+      const res = await this.client.sync({ syncToken: "*", resourceTypes: ["items"] });
+      // A full read of the items, so the subtask counts can be refreshed from it.
+      this.state.subtasks = {};
+      this.noteSubtasks(res.items ?? []);
+      return (res.items ?? []).filter((i) => !i.is_deleted && !i.checked);
+    });
+  }
+
+  /**
+   * Link tasks imported into `path`, given their lines as written (see importLines). Called before
+   * the lines reach the note, so a push or pull that runs first sees them as synced, not new.
+   */
+  registerImport(path: string, imported: { item: TodoistItem; line: string }[]): Promise<void> {
+    return this.exclusive(async () => {
+      for (const { item, line } of imported) {
+        const parsed = parseTaskLine(line);
+        if (!parsed) continue;
+        this.state.tasks[item.id] = { path, base: { text: parsed.content, checked: false, due: parsed.due } };
+        this.state.remote[item.id] = {
+          projectId: item.project_id,
+          priority: item.priority,
+          due: dueDate(item.due),
+          dueString: item.due?.string,
+          recurring: item.due?.is_recurring,
+          checked: false,
+          labels: item.labels,
+          parentId: item.parent_id ?? null,
+          orderKey: item.order_key ?? null,
+          childOrder: item.child_order,
+        };
+      }
+      this.log(`${path}: imported ${imported.length} task(s) from Todoist`);
+      await this.save();
     });
   }
 
@@ -220,8 +280,9 @@ export class SyncEngine {
     const commands: Command[] = [];
     const onOk: Record<string, () => void> = {};
     const seenIds = new Set<string>();
-    /** Real task ids whose `#[Project]` reference should be removed from the line. */
-    const stripProjects = new Set<string>();
+    /** References this push applied to synced tasks, by task id, to remove from their lines. */
+    const applied = new Map<string, AppliedRefs>();
+    const markApplied = (id: string, refs: AppliedRefs) => applied.set(id, { ...applied.get(id), ...refs });
     /** Projects created by this push: temp id → lower-cased name. */
     const newProjects = new Map<string, string>();
 
@@ -245,8 +306,6 @@ export class SyncEngine {
       return tmp;
     };
 
-    /** Real task ids → the `@labels` to remove from their line, once applied. */
-    const stripLabels = new Map<string, string[]>();
     /** Labels created by this push: key → name as created. */
     const newLabels = new Map<string, string>();
     /**
@@ -278,8 +337,42 @@ export class SyncEngine {
       return out;
     };
 
-    for (const { line, task } of tasks) {
-      const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
+    const lines = content.split("\n");
+    const byLine = new Map(tasks.map((t) => [t.line, t.task]));
+    const taskLines = new Set(byLine.keys());
+    /** Creates sent by this push: pending uuid → project id sent (undefined: the Inbox). */
+    const sentCreates = new Map<string, string | undefined>();
+    /** Creates of subtasks whose project this device doesn't know; a pull fills in their chip. */
+    const unknownProject = new Set<string>();
+    /** Each create's line, nested under which task (id or temp id) in the note, or null. */
+    const createdUnder = new Map<string, string | null>();
+    /** Nested lines with a `#[Project]`: top-level tasks in that project, so moved out of their block. */
+    const outdentNew = new Set<string>();
+    const outdent = new Set<string>();
+
+    /**
+     * The Todoist parent for a new line nested under another checkbox: its task id, or the temp id
+     * of its create in this push, with its project (null if unknown). "wait" if the parent isn't
+     * created yet; null for a line that isn't nested under a synced or syncing task.
+     */
+    const parentFor = (line: number): { id: string; projectId: string | null | undefined } | "wait" | null => {
+      const p = parentLine(lines, line, taskLines);
+      if (p === null) return null;
+      const pt = byLine.get(p)!;
+      if (pt.todoistId) {
+        if (this.state.tasks[pt.todoistId]?.orphaned) return null;
+        const meta = this.state.remote[pt.todoistId];
+        return { id: pt.todoistId, projectId: meta ? meta.projectId : null };
+      }
+      if (pt.pendingUuid) {
+        return sentCreates.has(pt.pendingUuid) ? { id: pt.pendingUuid, projectId: sentCreates.get(pt.pendingUuid) } : "wait";
+      }
+      return this.wantsCreate(pt) ? "wait" : null;
+    };
+
+    for (const { line, task: parsed } of tasks) {
+      let task = parsed;
+      let local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
 
       if (task.pendingUuid) {
         const pend = this.state.pending[task.pendingUuid];
@@ -289,17 +382,38 @@ export class SyncEngine {
           content: task.text,
           description: this.backlink(path, task.pendingUuid),
         };
-        const projectId = task.projectRef ? projectTarget(task.projectRef) : this.projectIdFor(path);
-        if (task.projectRef && !projectId) continue; // project can't be created on this device
-        if (projectId) args.project_id = projectId;
+        // Nested under a task: a subtask, in its parent's project. A `#[Project]` reference wins,
+        // since a subtask can't be in another project than its parent: it's created as a
+        // top-level task there, and its line is moved out of the block to match.
+        const placed = parentFor(line);
+        if (placed === "wait" && !task.projectRef) {
+          deferred = true; // created once its parent is, so it isn't made a task of its own
+          continue;
+        }
+        const parent = task.projectRef || placed === "wait" ? null : placed;
+        if (task.projectRef && placed) outdentNew.add(task.pendingUuid);
+        createdUnder.set(task.pendingUuid, parent ? parent.id : null);
+        if (parent) {
+          args.parent_id = parent.id;
+          if (parent.projectId) args.project_id = parent.projectId;
+          else if (parent.projectId === null) unknownProject.add(task.pendingUuid);
+        } else {
+          const projectId = task.projectRef ? projectTarget(task.projectRef) : this.projectIdFor(path);
+          if (task.projectRef && !projectId) continue; // project can't be created on this device
+          if (projectId) args.project_id = projectId;
+        }
         if (task.labelRefs.length) {
           const labels = labelNames(task.labelRefs);
           if (!labels) continue; // a label can't be created on this device
           args.labels = labels;
         }
-        if (task.due) args.due = { date: task.due };
+        if (task.priorityRef) args.priority = toApiPriority(task.priorityRef);
+        // Due date in words: Todoist works it out, and the next pull writes it to the line.
+        if (task.dueRef) args.due = dueFromWords(task.dueRef);
+        else if (task.due) args.due = { date: task.due };
         // Same uuid on retry: Todoist de-duplicates commands it has already applied.
         commands.push({ type: "item_add", uuid: task.pendingUuid, temp_id: task.pendingUuid, args });
+        sentCreates.set(task.pendingUuid, args.project_id as string | undefined);
         continue;
       }
 
@@ -309,12 +423,16 @@ export class SyncEngine {
       let rec = this.state.tasks[id];
       let adopted = false;
       if (!rec) {
-        // Marker appeared here without a record (pasted from another note, or created elsewhere): adopt it.
-        rec = this.state.tasks[id] = { path, base: local };
+        // Marker appeared here without a record (pasted from another note, or created elsewhere):
+        // adopt it, taking the line's words as its title, since they came from a synced line.
+        rec = this.state.tasks[id] = { path, base: { ...local, text: parsed.content } };
         adopted = true;
       }
       rec.path = path;
       if (rec.orphaned) continue;
+      // Words of the synced title are title, not references (see withTitle).
+      task = withTitle(parsed, rec.base.text);
+      local = { text: task.text, checked: task.checked, due: task.due };
 
       // `#[Project]` on a synced task: move it, then strip the reference. Not while the line is being edited.
       if (task.projectRef) {
@@ -323,11 +441,20 @@ export class SyncEngine {
         } else {
           const target = projectTarget(task.projectRef);
           if (target && target === this.state.remote[id]?.projectId) {
-            stripProjects.add(id); // already there
+            markApplied(id, { project: true }); // already there
           } else if (target) {
             const cmd: Command = { type: "item_move", uuid: makeUuid(), args: { id, project_id: target } };
             commands.push(cmd);
-            onOk[cmd.uuid] = () => stripProjects.add(id);
+            // Moving to a project makes it a top-level task there, so a nested line moves out of its block.
+            const nested = parentFor(line) !== null;
+            const r = rec;
+            onOk[cmd.uuid] = () => {
+              markApplied(id, { project: true });
+              if (nested) {
+                outdent.add(id);
+                r.parent = null;
+              }
+            };
           }
         }
       }
@@ -345,26 +472,102 @@ export class SyncEngine {
             for (const n of names) if (!merged.some((c) => labelKey(c) === labelKey(n))) merged.push(n);
             const refs = task.labelRefs;
             if (merged.length === current.length) {
-              stripLabels.set(id, refs); // already has them
+              markApplied(id, { labels: refs }); // already has them
             } else {
               const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, labels: merged } };
               commands.push(cmd);
               onOk[cmd.uuid] = () => {
                 meta.labels = merged;
-                stripLabels.set(id, refs);
+                markApplied(id, { labels: refs });
               };
             }
           }
         }
       }
+      // `p1`–`p4` on a synced task: set its priority, then strip it. Not while the line is being edited.
+      if (task.priorityRef) {
+        if (line === opts.skipLine) {
+          deferred = true;
+        } else {
+          const ref = task.priorityRef;
+          const priority = toApiPriority(ref);
+          if (meta?.priority === priority) {
+            markApplied(id, { priority: ref }); // already set
+          } else {
+            const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, priority } };
+            commands.push(cmd);
+            onOk[cmd.uuid] = () => {
+              if (meta) meta.priority = priority;
+              markApplied(id, { priority: ref });
+            };
+          }
+        }
+      }
+      // Due date in words on a synced task: send it to Todoist, then strip it. The pull that follows
+      // writes the date Todoist worked out to the line as `📅`. Not while the line is being edited.
+      if (task.dueRef) {
+        if (line === opts.skipLine) {
+          deferred = true;
+        } else {
+          const ref = task.dueRef;
+          const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, due: dueFromWords(ref) } };
+          commands.push(cmd);
+          const lineDue = local.due;
+          onOk[cmd.uuid] = () => {
+            markApplied(id, { due: ref });
+            // The line's `📅` is superseded: count it as synced, so the pull's date replaces it.
+            rec!.base = { ...rec!.base, due: lineDue };
+            this.wantPull = true;
+          };
+        }
+      }
+      // Nesting changed in the note since the last sync (indented, outdented or moved): make it a
+      // subtask of the task it's now under, or a top-level task. Todoist moves a subtask's own
+      // subtasks with it, and those lines moved with it here, so they stay put.
+      const placed = parentFor(line);
+      if (placed === "wait" || (placed && sentCreates.has(placed.id))) {
+        if (canCreate) deferred = true; // its new parent is being created; move it once it has an id
+      } else {
+        const want = placed ? placed.id : null;
+        const r = rec;
+        if (r.parent === undefined || adopted || task.projectRef || want === r.parent) {
+          r.parent = want; // first seen, unchanged, or a `#[Project]` (which wins): just note it
+        } else if (task.checked) {
+          // A completed task isn't moved; the change applies if it's unticked.
+        } else if (!meta || meta.parentId === undefined) {
+          deferred = true; // its Todoist details are needed first; a pull brings them
+        } else if (want === meta.parentId) {
+          r.parent = want; // already so in Todoist
+        } else {
+          const args = want ? { id, parent_id: want } : { id, project_id: meta.projectId };
+          const cmd: Command = { type: "item_move", uuid: makeUuid(), args };
+          commands.push(cmd);
+          onOk[cmd.uuid] = () => {
+            r.parent = want;
+            meta.parentId = want;
+            this.state.subtasks ??= {};
+            if (want) this.state.subtasks[id] = want;
+            else delete this.state.subtasks[id];
+            const parentProject = want ? this.state.remote[want]?.projectId : undefined;
+            if (parentProject) meta.projectId = parentProject; // a subtask is in its parent's project
+          };
+        }
+      }
+
       if (adopted) continue;
 
       const { push } = merge(rec.base, local, rec.base, 0, 0);
+      // Words beat an edited `📅` on the same line; they're the newer intent.
+      if (task.dueRef && line !== opts.skipLine) delete push.due;
       if (isEmpty(push)) continue;
       for (const cmd of commandsFor(id, push)) {
         commands.push(cmd);
         onOk[cmd.uuid] = () => {
           rec!.base = { ...rec!.base, ...pickFields(local, push) };
+          // A subtask ticked or unticked here: its parent's count changes now, not at the next pull.
+          this.state.subtasks ??= {};
+          if (cmd.type === "item_close") delete this.state.subtasks[id];
+          else if (cmd.type === "item_uncomplete" && meta?.parentId) this.state.subtasks[id] = meta.parentId;
         };
       }
     }
@@ -377,7 +580,8 @@ export class SyncEngine {
     }
 
     if (!commands.length) {
-      await this.stripRefs(path, stripProjects, stripLabels);
+      await this.stripRefs(path, applied);
+      await this.syncOrder(path);
       await this.save();
       return { deferred };
     }
@@ -387,10 +591,12 @@ export class SyncEngine {
     const mapping: Record<string, string> = {};
     for (let i = 0; i < commands.length; i += BATCH) {
       const batch = commands.slice(i, i + BATCH);
-      // A project created in an earlier batch is referenced by its real id from here on.
+      // A project or parent task created in an earlier batch is referenced by its real id from here on.
       for (const cmd of batch) {
-        const pid = cmd.args.project_id;
-        if (typeof pid === "string" && mapping[pid]) cmd.args.project_id = mapping[pid];
+        for (const key of ["project_id", "parent_id"]) {
+          const ref = cmd.args[key];
+          if (typeof ref === "string" && mapping[ref]) cmd.args[key] = mapping[ref];
+        }
       }
       const res = await this.client.sync({ commands: batch });
       Object.assign(mapping, res.temp_id_mapping ?? {});
@@ -413,10 +619,13 @@ export class SyncEngine {
       delete this.state.pendingProjects[key];
     }
     for (const cmd of commands) {
-      if (cmd.type !== "item_move" || !stripProjects.has(cmd.args.id as string)) continue;
+      if (cmd.type !== "item_move" || !applied.get(cmd.args.id as string)?.project) continue;
       const meta = this.state.remote[cmd.args.id as string];
       const pid = cmd.args.project_id as string;
-      if (meta) meta.projectId = mapping[pid] ?? pid;
+      if (meta) {
+        meta.projectId = mapping[pid] ?? pid;
+        meta.parentId = null; // moving to a project puts it at the top level
+      }
     }
 
     // 4. Replace pending markers with real ids, and strip project references that have been applied.
@@ -427,37 +636,84 @@ export class SyncEngine {
     const inbox = Object.entries(this.state.projects).find(([, p]) => p.inbox)?.[0];
     for (const [tmp, realId] of resolved) {
       const cmd = commands.find((c) => c.uuid === tmp && c.type === "item_add");
-      const pid = cmd?.args.project_id as string | undefined;
+      if ((cmd?.args.due as { string?: string } | undefined)?.string) this.wantPull = true; // fetch the date
+      const rec = this.state.tasks[realId];
+      if (!cmd || !rec) continue;
+      const parent = cmd.args.parent_id as string | undefined;
+      const parentId = parent ? (mapping[parent] ?? parent) : null;
+      if (parentId) (this.state.subtasks ??= {})[realId] = parentId; // its parent's chip counts it now
+      // Its nesting in the note when created, so a later indent or outdent is seen as a change.
+      const under = createdUnder.get(tmp);
+      if (rec.parent === undefined) rec.parent = under ? (mapping[under] ?? under) : null;
+      const pid = cmd.args.project_id as string | undefined;
       const projectId = pid ? (mapping[pid] ?? pid) : inbox;
-      if (!cmd || !projectId || !this.state.tasks[realId] || this.state.remote[realId]) continue;
+      if (!projectId || unknownProject.has(tmp) || this.state.remote[realId]) continue;
       const due = cmd.args.due as { date: string } | undefined;
       const labels = (cmd.args.labels as string[] | undefined) ?? [];
-      this.state.remote[realId] = { projectId, priority: 1, due: due?.date ?? null, checked: false, labels };
+      const priority = (cmd.args.priority as number | undefined) ?? 1;
+      this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels, parentId };
     }
-    await this.stripRefs(path, stripProjects, stripLabels);
+    await this.stripRefs(path, applied);
+    for (const [tmp, realId] of resolved) if (outdentNew.has(tmp)) outdent.add(realId);
+    if (outdent.size) await this.moveOut(path, [...outdent]);
+    await this.syncOrder(path);
 
     await this.save();
     return { deferred };
   }
 
   /**
-   * Remove applied references from synced lines: `#[Project]` for the ids in `projects`, and the
-   * named `@labels` for each id in `labels` (only those, in case another was typed meanwhile).
+   * Move these tasks' lines, with what's nested under them, out of the block they're in to the
+   * top level, just after it: they've become top-level tasks in Todoist (filed in another project).
    */
-  private async stripRefs(path: string, projects: Set<string>, labels: Map<string, string[]>): Promise<void> {
-    if (!projects.size && !labels.size) return;
+  private async moveOut(path: string, ids: string[]): Promise<void> {
+    const idOf = (l: string) => parseTaskLine(l)?.todoistId ?? null;
+    const tab = this.settings().indent ?? "\t";
+    await this.vault.process(path, (content) => {
+      let ls = content.split("\n");
+      let changed = false;
+      for (const id of ids) {
+        const at = findLineByMarker(ls, id);
+        const next = at >= 0 ? moveBlock(ls, at, null, new Set(), tab, idOf) : null;
+        if (!next) continue;
+        ls = next;
+        changed = true;
+        const rec = this.state.tasks[id];
+        if (rec) rec.parent = null;
+        this.log(`${path}: moved "${rec?.base.text ?? id}" out of its block, as it's now a top-level task in another project`);
+      }
+      return changed ? ls.join("\n") : content;
+    });
+  }
+
+  /**
+   * Remove references this push applied from their synced lines. Labels, priority and due date
+   * are removed only if still what was applied, in case something else was typed meanwhile.
+   */
+  private async stripRefs(path: string, applied: Map<string, AppliedRefs>): Promise<void> {
+    if (!applied.size) return;
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
       let changed = false;
-      for (const id of new Set([...projects, ...labels.keys()])) {
+      for (const [id, a] of applied) {
         const idx = findLineByMarker(lines, id);
-        const task = idx >= 0 ? parseTaskLine(lines[idx]) : null;
-        if (!task) continue;
-        const applied = new Set((labels.get(id) ?? []).map(labelKey));
-        const labelRefs = task.labelRefs.filter((l) => !applied.has(labelKey(l)));
-        const projectRef = projects.has(id) ? null : task.projectRef;
-        if (projectRef === task.projectRef && labelRefs.length === task.labelRefs.length) continue;
-        lines[idx] = serializeTask({ ...task, projectRef, labelRefs });
+        const parsed = idx >= 0 ? parseTaskLine(lines[idx]) : null;
+        if (!parsed) continue;
+        const task = withTitle(parsed, this.state.tasks[id]?.base.text);
+        const appliedLabels = new Set((a.labels ?? []).map(labelKey));
+        const labelRefs = task.labelRefs.filter((l) => !appliedLabels.has(labelKey(l)));
+        const projectRef = a.project ? null : task.projectRef;
+        const priorityRef = a.priority === task.priorityRef ? null : task.priorityRef;
+        const dueRef = a.due === task.dueRef ? null : task.dueRef;
+        if (
+          projectRef === task.projectRef &&
+          labelRefs.length === task.labelRefs.length &&
+          priorityRef === task.priorityRef &&
+          dueRef === task.dueRef
+        ) {
+          continue;
+        }
+        lines[idx] = serializeTask({ ...task, projectRef, labelRefs, priorityRef, dueRef });
         changed = true;
       }
       return changed ? lines.join("\n") : content;
@@ -473,8 +729,16 @@ export class SyncEngine {
         if (idx < 0) continue;
         const task = parseTaskLine(lines[idx]);
         if (!task) continue;
-        // The create carried the line's `#[Project]` and `@labels`, so the references have done their job.
-        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [] });
+        // The create carried the line's references, so they've done their job.
+        lines[idx] = serializeTask({
+          ...task,
+          pendingUuid: null,
+          todoistId: realId,
+          projectRef: null,
+          labelRefs: [],
+          priorityRef: null,
+          dueRef: null,
+        });
         this.state.tasks[realId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
       }
       return lines.join("\n");
@@ -483,26 +747,110 @@ export class SyncEngine {
 
   // ---------------------------------------------------------------- pull
 
+  /**
+   * True (once) if a push since the last call sent something that only a pull completes, such as
+   * a due date in words, whose actual date Todoist works out. The caller should pull soon.
+   */
+  takePullRequest(): boolean {
+    const want = this.wantPull;
+    this.wantPull = false;
+    return want;
+  }
+
   pull(): Promise<void> {
     return this.exclusive(() => this.pullInner());
   }
 
   /**
+   * Add and remove labels on a synced task, from the label picker. Pulls first, so the change is
+   * made to the task's labels as Todoist has them now: Todoist only takes the whole list, and one
+   * added or removed there since this device last pulled would otherwise be undone. A label that
+   * doesn't exist is created. Returns false if the task isn't one this device can change.
+   */
+  /**
+   * Set a synced task's due date, from the due date picker: a date (`YYYY-MM-DD`), words for
+   * Todoist to work out (`next friday`, `every month`), or null for none. Then pulls, so the line's
+   * `📅` follows the way any change made in Todoist does. Throws if Todoist can't read the words.
+   */
+  async changeDue(id: string, due: { date: string } | { words: string } | null): Promise<boolean> {
+    const sent = await this.exclusive(async () => {
+      if (!this.isLinked(id)) return false;
+      const value = due === null ? null : "words" in due ? dueFromWords(due.words) : { date: due.date };
+      const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, due: value } };
+      const res = await this.client.sync({ commands: [cmd] });
+      const status = res.sync_status?.[cmd.uuid];
+      if (status !== "ok") {
+        const why = status && typeof status === "object" ? status.error : "no answer";
+        throw new Error(due && "words" in due ? `Todoist couldn't set the date to “${due.words}”: ${why}` : `Todoist didn't change the date: ${why}`);
+      }
+      this.log(`set due on ${id}: ${due === null ? "none" : "words" in due ? due.words : due.date}`);
+      return true;
+    });
+    if (sent) await this.pull();
+    return sent;
+  }
+
+  async changeLabels(id: string, add: string[], remove: string[]): Promise<boolean> {
+    await this.pull();
+    return this.exclusive(async () => {
+      const meta = this.state.remote[id];
+      if (!meta || !this.state.tasks[id] || this.state.tasks[id].orphaned) return false;
+      const current = meta.labels ?? [];
+      const drop = new Set(remove.map(labelKey));
+      const next = current.filter((l) => !drop.has(labelKey(l)));
+      const commands: Command[] = [];
+      const created = new Map<string, string>(); // command uuid → label name
+      for (const ref of add) {
+        if (next.some((l) => labelKey(l) === labelKey(ref))) continue;
+        const existing = this.findLabel(ref);
+        const name = existing ?? ref.trim().replace(/\s+/g, " ");
+        if (!name) continue;
+        if (!existing && ![...created.values()].some((n) => labelKey(n) === labelKey(name))) {
+          const tmp = makeUuid();
+          commands.push({ type: "label_add", uuid: tmp, temp_id: tmp, args: { name } });
+          created.set(tmp, name);
+        }
+        next.push(name);
+      }
+      const same = next.length === current.length && next.every((l, i) => l === current[i]);
+      if (same) return true;
+      const update: Command = { type: "item_update", uuid: makeUuid(), args: { id, labels: next } };
+      commands.push(update);
+      const res = await this.client.sync({ commands });
+      for (const [uuid, name] of created) {
+        if (res.sync_status?.[uuid] === "ok") this.state.labels[`${NEW_LABEL}${labelKey(name)}`] = { name };
+      }
+      const status = res.sync_status?.[update.uuid];
+      if (status !== "ok") {
+        const why = status && typeof status === "object" ? status.error : "no answer";
+        throw new Error(`Todoist didn't change the labels: ${why}`);
+      }
+      meta.labels = next;
+      this.log(`changed labels on ${id}: ${next.length ? next.map((l) => `@${l}`).join(" ") : "none"}`);
+      await this.save();
+      return true;
+    });
+  }
+
+  /**
    * Linked tasks this device has no Todoist details for (project, due date, ...), and hasn't yet
    * tried to fetch. Happens when a task was created on another device: its marker arrives here by
-   * Obsidian Sync after this device's pulls have already gone past the task.
+   * Obsidian Sync after this device's pulls have already gone past the task. Also tasks whose
+   * details were saved before their parent task was tracked, which moving them needs.
    */
   missingDetails(): string[] {
     return Object.entries(this.state.tasks)
-      .filter(([id, rec]) => !rec.orphaned && !this.state.remote[id] && !this.fetchTried.has(id))
+      .filter(([id, rec]) => !rec.orphaned && this.state.remote[id]?.parentId === undefined && !this.fetchTried.has(id))
       .map(([id]) => id);
   }
 
   private async pullInner(): Promise<void> {
-    // Projects saved before archived/parent were tracked need one full sync to fill them in, and so
-    // do tasks we have no details for, since an incremental sync only returns tasks that changed.
+    // Projects saved before archived/parent/order were tracked need one full sync to fill them in, and
+    // so do tasks we have no details for, since an incremental sync only returns tasks that changed.
     const stale =
-      Object.values(this.state.projects).some((p) => p.parentId === undefined) || !this.state.labelsSynced;
+      Object.values(this.state.projects).some((p) => p.parentId === undefined || p.order === undefined) ||
+      !this.state.labelsSynced ||
+      !this.state.subtasksSynced;
     const missing = this.missingDetails();
     // Tried once per session: a completed or deleted task isn't returned, and mustn't force a full sync every time.
     for (const id of missing) this.fetchTried.add(id);
@@ -516,7 +864,10 @@ export class SyncEngine {
       this.state.projects = {};
       this.state.labels = {};
       this.state.labelsSynced = true;
+      this.state.subtasks = {};
+      this.state.subtasksSynced = true;
     }
+    this.noteSubtasks(res.items ?? []);
     for (const l of res.labels ?? []) {
       if (l.is_deleted) delete this.state.labels[l.id];
       else this.state.labels[l.id] = { name: l.name, order: l.item_order };
@@ -535,6 +886,7 @@ export class SyncEngine {
           inbox: p.inbox_project,
           archived: p.is_archived,
           parentId: p.parent_id ?? null,
+          order: p.child_order ?? 0,
         };
       }
     }
@@ -543,6 +895,8 @@ export class SyncEngine {
 
     const byPath = new Map<string, TodoistItem[]>();
     const pendingResolutions = new Map<string, [string, string][]>();
+    /** Linked tasks moved to another parent in Todoist, by note. */
+    const movedHere = new Map<string, string[]>();
 
     for (const item of res.items ?? []) {
       // Creation that we sent but never saw a temp_id mapping for (e.g. de-duplicated retry).
@@ -559,6 +913,11 @@ export class SyncEngine {
         delete this.state.remote[item.id];
         continue;
       }
+      // Moved to another parent (or out to the top level) in Todoist since we last saw it.
+      const was = this.state.remote[item.id]?.parentId;
+      if (was !== undefined && was !== (item.parent_id ?? null) && !item.checked) {
+        movedHere.set(rec.path, [...(movedHere.get(rec.path) ?? []), item.id]);
+      }
       this.state.remote[item.id] = {
         projectId: item.project_id,
         priority: item.priority,
@@ -567,6 +926,9 @@ export class SyncEngine {
         recurring: item.due?.is_recurring,
         checked: item.checked,
         labels: item.labels,
+        parentId: item.parent_id ?? null,
+        orderKey: item.order_key ?? null,
+        childOrder: item.child_order,
       };
       byPath.set(rec.path, [...(byPath.get(rec.path) ?? []), item]);
     }
@@ -602,8 +964,209 @@ export class SyncEngine {
     }
 
     if (commands.length) await this.client.sync({ commands });
+    // Tasks moved to another parent in Todoist: move their lines to match.
+    for (const [path, ids] of movedHere) await this.followMoves(path, ids);
+    // Subtasks reordered in Todoist (or here, and not yet sent) in the notes this pull touched.
+    for (const path of byPath.keys()) await this.syncOrder(path);
     this.state.syncToken = res.sync_token;
     await this.save();
+  }
+
+  // ---------------------------------------------------------------- nesting from Todoist
+
+  /**
+   * Tasks in `path` that were moved to another parent in Todoist (or out to the top level): move
+   * their lines, with what's nested under them, to match. Not if the line's nesting was also
+   * changed in the note since the last sync; the note wins, and the push sends its version.
+   */
+  private async followMoves(path: string, ids: string[]): Promise<void> {
+    const idOf = (l: string) => parseTaskLine(l)?.todoistId ?? null;
+    const tab = this.settings().indent ?? "\t";
+    const sibling = (id: string): Sibling => ({ id, key: this.state.remote[id]?.orderKey, childOrder: this.state.remote[id]?.childOrder });
+    const notes: string[] = [];
+    await this.vault.process(path, (content) => {
+      let ls = content.split("\n");
+      let changed = false;
+      for (const id of ids) {
+        const rec = this.state.tasks[id];
+        const want = this.state.remote[id]?.parentId ?? null;
+        const at = findLineByMarker(ls, id);
+        if (!rec || rec.orphaned || at < 0) continue;
+        const taskLines = new Set(findTasks(ls.join("\n")).map((t) => t.line));
+        const p = parentLine(ls, at, taskLines);
+        const local = p === null ? null : idOf(ls[p]);
+        if (local === want) {
+          rec.parent = want;
+          continue;
+        }
+        if (rec.parent !== undefined && local !== rec.parent) continue; // moved in the note too: the note wins
+        if (want && findLineByMarker(ls, want) < 0) {
+          notes.push(`${path}: "${rec.base.text}" was moved in Todoist under a task that isn't in this note; left where it is`);
+          continue;
+        }
+        // Placed by Todoist's order among the new parent's subtasks that are in the note.
+        const before = new Set(
+          Object.entries(this.state.remote)
+            .filter(([k, m]) => k !== id && m.parentId === want && compareSiblings(sibling(k), sibling(id)) < 0)
+            .map(([k]) => k),
+        );
+        const next = moveBlock(ls, at, want, before, tab, idOf);
+        if (!next) continue;
+        ls = next;
+        rec.parent = want;
+        changed = true;
+        notes.push(`${path}: moved "${rec.base.text}" to match Todoist`);
+      }
+      return changed ? ls.join("\n") : content;
+    });
+    for (const n of notes) this.log(n);
+  }
+
+  // ---------------------------------------------------------------- subtask order
+
+  /**
+   * Keep the order of each synced task's synced subtasks the same in the note and in Todoist
+   * (see TaskRecord.kidsNote). Called after a push, and by a pull for the notes it touched.
+   */
+  private async syncOrder(path: string): Promise<void> {
+    const lines = (await this.vault.read(path)).split("\n");
+    const tasks = findTasks(lines.join("\n"));
+    const byLine = new Map(tasks.map((t) => [t.line, t.task]));
+    const taskLines = new Set(byLine.keys());
+    const live = (id: string | null | undefined): id is string => !!id && this.isLinked(id);
+
+    // Each synced task's open, synced subtasks in this note, in note order. Only those Todoist
+    // agrees are its subtasks: one just indented under it is moved first, then ordered.
+    const groups = new Map<string, string[]>();
+    for (const { line, task } of tasks) {
+      const id = task.todoistId;
+      if (!live(id) || task.checked || this.state.remote[id]?.checked) continue;
+      const p = parentLine(lines, line, taskLines);
+      const parent = p === null ? null : byLine.get(p)?.todoistId;
+      if (!live(parent) || this.state.remote[id]?.parentId !== parent) continue;
+      groups.set(parent, [...(groups.get(parent) ?? []), id]);
+    }
+    if (!groups.size) return;
+
+    // Tasks whose place in Todoist isn't known (created here, or saved by an older version): read it.
+    let fresh: TodoistItem[] | undefined;
+    const read = async () => (fresh ??= await this.readItems());
+    const unknown = [...groups.values()].flat().filter((id) => this.state.remote[id]?.orderKey === undefined);
+    if (unknown.some((id) => !this.orderTried.has(id))) {
+      for (const id of unknown) this.orderTried.add(id);
+      await read();
+    }
+    const sibling = (id: string): Sibling => ({ id, key: this.state.remote[id]?.orderKey, childOrder: this.state.remote[id]?.childOrder });
+    const known = (id: string) => this.state.remote[id]?.orderKey !== undefined;
+
+    const commands: Command[] = [];
+    const onOk: Record<string, () => void> = {};
+    const reorder = new Map<string, string[]>();
+    for (const [parent, local] of groups) {
+      const rec = this.state.tasks[parent];
+      const remote = local.every(known) ? [...local].sort((a, b) => compareSiblings(sibling(a), sibling(b))) : null;
+      const settle = (order: string[], todoist: string[] | null = order) => {
+        rec.kidsNote = order;
+        rec.kidsTodoist = todoist ?? undefined;
+      };
+      if (!rec.kidsNote) {
+        settle(local, remote); // first seen: nothing to compare with yet
+        continue;
+      }
+      const changed = (now: string[], was: string[] | undefined) =>
+        !was || now.some((id) => !was.includes(id)) || !sameOrder(inOrderOf(now, was), inOrderOf(was, now));
+      const noteChanged = changed(local, rec.kidsNote);
+      const todoistChanged = !!remote && !!rec.kidsTodoist && !sameOrder(inOrderOf(remote, rec.kidsTodoist), inOrderOf(rec.kidsTodoist, remote));
+      if (remote && sameOrder(local, remote)) {
+        settle(local);
+      } else if (noteChanged) {
+        // Reordered in the note (or a subtask joined here): give the moved tasks new places.
+        const siblings = (await read())
+          .filter((i) => i.parent_id === parent && !i.checked && !i.is_deleted)
+          .map((i) => ({ id: i.id, key: i.order_key, childOrder: i.child_order }))
+          .sort(compareSiblings);
+        const keys = reorderKeys(siblings, local);
+        if (!keys) {
+          this.log(`${path}: can't reorder the subtasks of ${parent} in Todoist (no order keys)`);
+          settle(local, remote);
+          continue;
+        }
+        for (const [id, key] of keys) {
+          const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, order_key: key } };
+          commands.push(cmd);
+          onOk[cmd.uuid] = () => {
+            const meta = this.state.remote[id];
+            if (meta) meta.orderKey = key;
+          };
+        }
+        settle(local); // if a command fails, the next pull shows Todoist's order as changed and puts it back
+      } else if (todoistChanged && remote) {
+        reorder.set(parent, remote); // reordered in Todoist: rearrange the lines
+      } else {
+        settle(local, remote);
+      }
+    }
+
+    if (commands.length) {
+      const res = await this.client.sync({ commands });
+      for (const cmd of commands) {
+        const status = res.sync_status?.[cmd.uuid];
+        if (status === "ok") onOk[cmd.uuid]?.();
+        else if (status) this.log(`Todoist rejected ${cmd.type} ${JSON.stringify(cmd.args)}: ${status.error}`);
+      }
+      this.log(`${path}: reordered ${commands.length} subtask(s) in Todoist`);
+    }
+    if (reorder.size) {
+      const idOf = (l: string) => parseTaskLine(l)?.todoistId ?? null;
+      const done = new Set<string>();
+      await this.vault.process(path, (content) => {
+        let ls = content.split("\n");
+        for (const [parent, order] of reorder) {
+          const at = findLineByMarker(ls, parent);
+          const next = at >= 0 ? reorderBlocks(ls, at, order, idOf) : null;
+          if (next) {
+            ls = next;
+            done.add(parent);
+          }
+        }
+        return done.size ? ls.join("\n") : content;
+      });
+      for (const [parent, order] of reorder) {
+        const rec = this.state.tasks[parent];
+        if (done.has(parent)) {
+          rec.kidsNote = order;
+          rec.kidsTodoist = order;
+        } else {
+          // Something other than subtasks sits among them, so there's no telling where it goes.
+          this.log(`${path}: subtasks of ${parent} were reordered in Todoist; left as they are in the note`);
+          rec.kidsTodoist = order;
+        }
+      }
+      if (done.size) this.log(`${path}: reordered the subtasks of ${done.size} task(s) to match Todoist`);
+    }
+  }
+
+  /** All open items, read afresh: fills in each linked task's place among its siblings. */
+  private async readItems(): Promise<TodoistItem[]> {
+    const res = await this.client.sync({ syncToken: "*", resourceTypes: ["items"] });
+    const items = (res.items ?? []).filter((i) => !i.is_deleted && !i.checked);
+    for (const i of items) {
+      const meta = this.state.remote[i.id];
+      if (!meta) continue;
+      meta.orderKey = i.order_key ?? null;
+      meta.childOrder = i.child_order;
+      meta.parentId = i.parent_id ?? null;
+    }
+    return items;
+  }
+
+  /** Record which of these items are open subtasks, and of what (see SyncState.subtasks). */
+  private noteSubtasks(items: TodoistItem[]): void {
+    this.state.subtasks ??= {};
+    for (const item of items) {
+      if (item.parent_id && !item.checked && !item.is_deleted) this.state.subtasks[item.id] = item.parent_id;
+      else delete this.state.subtasks[item.id];
+    }
   }
 
   /** Pure: three-way merge each pulled item against its line in `content`. */
@@ -617,8 +1180,9 @@ export class SyncEngine {
       const rec = this.state.tasks[item.id];
       const idx = findLineByMarker(lines, item.id);
       if (idx < 0) continue; // moved; the index will re-adopt it on the next push
-      const task = parseTaskLine(lines[idx]);
-      if (!task) continue;
+      const parsed = parseTaskLine(lines[idx]);
+      if (!parsed) continue;
+      const task = withTitle(parsed, rec.base.text);
       const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
       const remote: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
       const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;
@@ -654,6 +1218,27 @@ export class SyncEngine {
 /** Comparison key for project names: case- and whitespace-insensitive. */
 export function projectKey(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** References applied to a synced task by one push, to remove from its line. */
+interface AppliedRefs {
+  project?: boolean;
+  labels?: string[];
+  priority?: number;
+  due?: string;
+}
+
+/**
+ * Todoist due object for a date in words. Todoist parses the string as its Quick Add does
+ * (numeric dates follow the user's Todoist date format), including recurrence ("every monday").
+ */
+export function dueFromWords(words: string): { string: string; lang: string } {
+  return { string: words, lang: "en" };
+}
+
+/** `pN` as written (1 = p1, urgent) → Todoist's API value (4 = urgent … 1 = none). */
+export function toApiPriority(p: number): number {
+  return 5 - p;
 }
 
 /** Labels match like projects: ignoring case and extra spaces. */

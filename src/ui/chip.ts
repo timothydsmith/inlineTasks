@@ -1,6 +1,8 @@
+import { setIcon } from "obsidian";
 import { PENDING } from "../parse/taskLine";
-import type { SyncState } from "../sync/state";
+import { subtaskCount, type SyncState } from "../sync/state";
 import { taskUrl } from "../todoist/client";
+import { todoistColor } from "../todoist/colors";
 
 // Todoist priority 4 = p1 (urgent) … 1 = p4 (normal)
 const PRIORITY_CLASS: Record<number, string> = { 4: "p1", 3: "p2", 2: "p3" };
@@ -20,11 +22,12 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     s.className = cls;
     s.textContent = text;
     chip.appendChild(s);
+    return s;
   };
 
   if (markerId.startsWith(PENDING)) {
     chip.classList.add("is-pending");
-    add("inline-tasks-label", "syncing…");
+    add("inline-tasks-status", "syncing…");
     chip.title = "Creating in Todoist";
     return chip;
   }
@@ -37,19 +40,42 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
 
   if (rec?.orphaned) {
     chip.classList.add("is-orphaned");
-    add("inline-tasks-label", "deleted in Todoist");
+    add("inline-tasks-status", "deleted in Todoist");
     chip.title = "This task was deleted in Todoist. Remove the marker to unlink it.";
     return chip;
   }
 
   if (meta) {
     const project = state.projects[meta.projectId];
-    if (project && !project.inbox) add("inline-tasks-project", `#${project.name}`);
-    if (meta.due) add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
+    if (project) {
+      const s = add("inline-tasks-project", `#${project.name}`);
+      s.title = "Click to move it to another project";
+      const color = todoistColor(project.color); // the project's colour in Todoist
+      if (color) s.style.color = color;
+    }
+    if (meta.due) {
+      const s = add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
+      s.title = "Click to change its due date";
+    }
     const p = PRIORITY_CLASS[meta.priority];
-    if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase());
-    for (const l of meta.labels ?? []) add("inline-tasks-label", `@${l}`);
+    if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase()).title = "Click to change its priority";
+    const labels = meta.labels ?? [];
+    if (labels.length === 1) {
+      add("inline-tasks-label", `@${labels[0]}`).title = "Click to change its labels";
+    } else if (labels.length > 1) {
+      // Two or more: a tag icon and how many, to keep the chip short. Hover lists them.
+      const s = add("inline-tasks-label inline-tasks-label-count", "");
+      setIcon(s.createSpan(), "tag");
+      s.createSpan({ text: String(labels.length) });
+      s.title = `${labels.map((l) => `@${l}`).join(" ")}. Click to change them.`;
+    }
     if (meta.checked) chip.classList.add("is-done");
+  }
+  const subtasks = subtaskCount(state, markerId);
+  if (subtasks) {
+    add("inline-tasks-subtasks", `↳ ${subtasks}`);
+    const n = subtasks === 1 ? "1 open subtask" : `${subtasks} open subtasks`;
+    (chip.lastChild as HTMLElement).title = `${n}. Click to add any that aren't in a note yet.`;
   }
   chip.title = "Open in Todoist";
   return chip;

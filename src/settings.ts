@@ -6,13 +6,18 @@ export interface InlineTasksSettings {
   excludedFolders: string[];
   folderProjects: { folder: string; project: string }[];
   pullIntervalMinutes: number;
+  /** Whether **Import task from Todoist** brings a task's open subtasks with it. */
+  importSubtasks: ImportSubtasks;
 }
+
+export type ImportSubtasks = "ask" | "always" | "never";
 
 export const DEFAULT_SETTINGS: InlineTasksSettings = {
   apiToken: "",
   excludedFolders: ["Templates"],
   folderProjects: [],
   pullIntervalMinutes: 5,
+  importSubtasks: "ask",
 };
 
 export class InlineTasksSettingTab extends PluginSettingTab {
@@ -89,6 +94,19 @@ export class InlineTasksSettingTab extends PluginSettingTab {
             this.plugin.schedulePull();
           }
         }),
+      );
+
+    new Setting(containerEl)
+      .setName("Import subtasks")
+      .setDesc("When you import a task from Todoist that has open subtasks, whether to insert them beneath it.")
+      .addDropdown((d) =>
+        d
+          .addOptions({ ask: "Ask each time", always: "Always import", never: "Never import" })
+          .setValue(s.importSubtasks)
+          .onChange(async (v) => {
+            s.importSubtasks = v as ImportSubtasks;
+            await this.plugin.saveAll();
+          }),
       );
 
     new Setting(containerEl)

@@ -29,6 +29,12 @@ export interface TodoistItem {
   priority: number; // 1 (normal) .. 4 (urgent)
   due: TodoistDue | null;
   labels?: string[];
+  /** The parent task's id, for a subtask. */
+  parent_id?: string | null;
+  /** Position among its siblings (older ordering; see order_key). */
+  child_order?: number;
+  /** Fractional-indexing key: siblings sort by comparing these. Null for tasks not migrated yet. */
+  order_key?: string | null;
   updated_at?: string;
 }
 
@@ -40,6 +46,8 @@ export interface TodoistProject {
   is_deleted?: boolean;
   is_archived?: boolean;
   parent_id?: string | null;
+  /** Place among its sibling projects. */
+  child_order?: number;
 }
 
 export interface TodoistLabel {

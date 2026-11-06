@@ -1,14 +1,22 @@
 import { EditorView } from "@codemirror/view";
-import { MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
+import { Editor, editorInfoField, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
-import { SyncEngine, type VaultAdapter } from "./sync/engine";
+import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
+import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withRef } from "./parse/taskLine";
+import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
-import { emptyState, type SyncState } from "./sync/state";
-import { TodoistClient, TodoistError, type HttpFn } from "./todoist/client";
+import { emptyState, subtaskCount, type SyncState } from "./sync/state";
+import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
+import { ImportModal } from "./ui/importModal";
+import { DueModal } from "./ui/dueModal";
+import { PriorityModal } from "./ui/priorityModal";
+import { ProjectModal } from "./ui/projectModal";
+import { SubtaskChoiceModal } from "./ui/subtaskChoiceModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
 import { localEditTracker } from "./ui/localEdits";
-import { LabelSuggest } from "./ui/labelSuggest";
+import { LabelModal, type LabelPick } from "./ui/labelModal";
+import { labelTrigger } from "./ui/labelTrigger";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { readingChipProcessor } from "./ui/readingChip";
 
@@ -32,6 +40,8 @@ export default class InlineTasksPlugin extends Plugin {
   engine!: SyncEngine;
 
   private dirty = new Set<string>();
+  /** Notes with a label picker open from a typed `@`: not pushed until it closes, so the `@` never reaches a title. */
+  private picking = new Set<string>();
   private pushTimer: number | null = null;
   private pullTimer: number | null = null;
   private chipVersion = 0;
@@ -77,13 +87,14 @@ export default class InlineTasksPlugin extends Plugin {
       new TodoistClient(() => this.settings.apiToken, http),
       this.vaultAdapter(),
       this.state,
-      () => ({ ...this.settings, canCreate: this.canCreate }),
+      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit() }),
       () => this.saveState(),
       (msg) => this.log(msg),
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion));
+    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id), due: (id: string) => this.changeDue(id) };
+    this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, chipActions));
     this.registerEditorExtension(
       localEditTracker(
         (path) => this.origin.localEdit(path, Date.now()),
@@ -94,7 +105,7 @@ export default class InlineTasksPlugin extends Plugin {
     for (const type of ["keydown", "pointerdown", "touchstart", "paste", "drop"] as const) {
       this.registerDomEvent(document, type, () => (this.lastInputAt = Date.now()), { capture: true });
     }
-    this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state));
+    this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, chipActions));
     this.registerSuggests();
 
     this.registerEvent(this.app.vault.on("modify", (f) => void this.onWrite(f)));
@@ -131,6 +142,26 @@ export default class InlineTasksPlugin extends Plugin {
             this.refresh();
           }, true);
         }
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "import-task",
+      name: "Import task from Todoist",
+      editorCheckCallback: (checking, editor, ctx) => {
+        const file = ctx.file;
+        if (!file || !this.settings.apiToken || !this.state.backfillDone || !this.engine.isFileEligible(file.path)) return false;
+        if (!checking) void this.importTask(editor, file.path);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "insert-subtasks",
+      name: "Add missing subtasks from Todoist",
+      editorCheckCallback: (checking, editor) => {
+        const id = parseTaskLine(editor.getLine(editor.getCursor().line))?.todoistId;
+        if (!id || !this.settings.apiToken || !this.engine.isLinked(id)) return false;
+        if (!checking) void this.insertMissingSubtasks(id);
         return true;
       },
     });
@@ -237,7 +268,252 @@ export default class InlineTasksPlugin extends Plugin {
     const enabled = (file: TFile | null) =>
       !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path);
     this.registerEditorSuggest(new ProjectSuggest(this.app, () => this.state, enabled));
-    this.registerEditorSuggest(new LabelSuggest(this.app, () => this.state, enabled));
+    this.registerEditorExtension(labelTrigger(enabled, (view, pos) => this.labelsFromAt(view, pos)));
+  }
+
+  // ------------------------------------------------------------ label picker
+
+  /** Pick a synced task's labels, from a click on one of its chip's labels. */
+  private changeLabels(id: string): void {
+    if (!this.engine.isLinked(id) || !this.settings.apiToken) return;
+    new LabelModal(this.app, this.state, this.state.remote[id]?.labels ?? [], (pick) => {
+      if (pick.add.length || pick.remove.length) void this.applyLabels(id, pick);
+    }).open();
+  }
+
+  private async applyLabels(id: string, pick: LabelPick): Promise<void> {
+    await this.guard(() => this.engine.changeLabels(id, pick.add, pick.remove), true);
+    this.refresh();
+  }
+
+  /**
+   * `@` was typed on a checkbox line at `pos`: open the label picker. A synced task's labels are
+   * changed in Todoist when it closes, and the `@` is removed. On a line not synced yet, the `@` is
+   * replaced by references to the labels picked, which sync applies when it creates the task. Closed
+   * with nothing ticked or unticked, it cancels: the `@` is removed, and what was typed in the search
+   * box is dropped, so a label is only ever created by choosing **Create label**.
+   */
+  private labelsFromAt(view: EditorView, pos: number): void {
+    const task = parseTaskLine(view.state.doc.lineAt(pos).text);
+    if (!task) return;
+    const id = task.todoistId && this.engine.isLinked(task.todoistId) ? task.todoistId : null;
+    const current = id ? (this.state.remote[id]?.labels ?? []) : task.labelRefs.map((r) => this.engine.findLabel(r) ?? r);
+    const path = view.state.field(editorInfoField, false)?.file?.path;
+    if (path) this.picking.add(path);
+    new LabelModal(this.app, this.state, current, (pick) => {
+      if (path) this.picking.delete(path);
+      const changed = pick.add.length > 0 || pick.remove.length > 0;
+      const doc = view.state.doc;
+      if (pos < doc.length && doc.sliceString(pos, pos + 1) === "@") {
+        const line = doc.lineAt(pos);
+        const at = pos - line.from;
+        const drop = new Set(pick.remove.map(labelKey));
+        // The `@` goes in any case: replaced by references on a line not synced yet, otherwise just removed.
+        const next =
+          !changed || id
+            ? withPickedLabels(line.text, at, [], () => false)
+            : withPickedLabels(line.text, at, pick.add, (n) => drop.has(labelKey(n)));
+        view.dispatch({
+          changes: next.line === line.text ? undefined : { from: line.from, to: line.to, insert: next.line },
+          selection: { anchor: line.from + next.cursor },
+          userEvent: "input",
+        });
+      }
+      view.focus();
+      if (id && changed) void this.applyLabels(id, pick);
+    }).open();
+  }
+
+  // ------------------------------------------------------------ import
+
+  /**
+   * Pick an open Todoist task and insert it at the cursor, with its open subtasks if the
+   * **Import subtasks** setting says so (or, set to ask, if the user chooses them).
+   */
+  private async importTask(editor: Editor, path: string): Promise<void> {
+    const items = await this.guard(() => this.engine.openTasks(), true);
+    if (!items) return;
+    const isLinked = (id: string) => this.engine.isLinked(id);
+    new ImportModal(this.app, this.state, items, isLinked, (root) => {
+      const subtasks = importLines(root, items, isLinked, "", "").items.length - 1;
+      const mode = this.settings.importSubtasks;
+      const insert = (withSubtasks: boolean) => void this.guard(() => this.insertImport(editor, path, root, items, withSubtasks), true);
+      if (!subtasks || mode !== "ask") insert(mode !== "never");
+      else new SubtaskChoiceModal(this.app, root.content, subtasks, insert).open();
+    }).open();
+  }
+
+  /** Insert an imported task (and its subtasks) at the cursor: see the README's Importing a task. */
+  private async insertImport(editor: Editor, path: string, root: TodoistItem, open: TodoistItem[], withSubtasks: boolean): Promise<void> {
+    const cursor = editor.getCursor();
+    const current = editor.getLine(cursor.line);
+    const list = /^(\s*)(?:[-*+]|\d+[.)])(?:\s+\[.\])?\s*(.*)$/.exec(current);
+    // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
+    const replace = current.trim() === "" || (!!list && list[2] === "");
+    const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
+    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, this.indentUnit(), withSubtasks);
+    // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
+    await this.engine.registerImport(path, items.map((item, i) => ({ item, line: lines[i] })));
+    const text = lines.join("\n");
+    if (replace) {
+      editor.replaceRange(text, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: current.length });
+    } else {
+      editor.replaceRange(`\n${text}`, { line: cursor.line, ch: current.length });
+    }
+    const last = cursor.line + (replace ? 0 : 1) + lines.length - 1;
+    editor.setCursor({ line: last, ch: editor.getLine(last).length });
+    this.refresh();
+  }
+
+  /** One level of list indentation, as the editor is set to write it. */
+  private indentUnit(): string {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
+    return config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
+  }
+
+  /**
+   * Insert a synced task's open subtasks that aren't in any note yet beneath its line, after any
+   * subtasks already there. From the command, or a click on the chip's subtask count.
+   */
+  private async insertMissingSubtasks(id: string): Promise<void> {
+    const rec = this.state.tasks[id];
+    const file = rec && this.app.vault.getAbstractFileByPath(rec.path);
+    if (!rec || rec.orphaned || !(file instanceof TFile)) return;
+    const open = await this.guard(() => this.engine.openTasks(), true);
+    if (!open) return;
+    this.refresh(); // the read also refreshed the counts
+    const isLinked = (t: string) => this.engine.isLinked(t);
+    const editor = this.editorFor(file.path);
+    const read = async () => (editor ? editor.getValue() : await this.app.vault.read(file)).split("\n");
+
+    const tab = this.indentUnit();
+    const lines = await read();
+    const idx = findLineByMarker(lines, id);
+    if (idx < 0) return;
+    const { added } = withMissingSubtasks(lines, idx, id, open, isLinked, tab);
+    if (!added.length) {
+      new Notice(subtaskCount(this.state, id) ? "Its open subtasks are already in your notes" : "This task has no open subtasks");
+      return;
+    }
+    // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
+    await this.engine.registerImport(file.path, added);
+    // Placed again, in case the note changed meanwhile; the ones just linked still count as missing.
+    const adding = new Set(added.map((a) => a.item.id));
+    const place = (ls: string[], at: number) => withMissingSubtasks(ls, at, id, open, (t) => !adding.has(t) && isLinked(t), tab).lines;
+    if (editor) {
+      const ls = await read();
+      const at = findLineByMarker(ls, id);
+      if (at >= 0) {
+        // Replace the block nested under the task with the block including the new subtasks.
+        const end = blockEnd(ls, at);
+        const next = place(ls, at);
+        const block = next.slice(at + 1, end + 1 + next.length - ls.length);
+        editor.replaceRange(`\n${block.join("\n")}`, { line: at, ch: ls[at].length }, { line: end, ch: ls[end].length });
+      }
+    } else {
+      await this.app.vault.process(file, (c) => {
+        const ls = c.split("\n");
+        const at = findLineByMarker(ls, id);
+        return at < 0 ? c : place(ls, at).join("\n");
+      });
+    }
+    new Notice(added.length === 1 ? "Added 1 subtask" : `Added ${added.length} subtasks`);
+    this.refresh();
+  }
+
+  // ------------------------------------------------------------ project picker
+
+  /** Pick a project to move a synced task to, from a click on its chip's project. */
+  private changeProject(id: string): void {
+    const rec = this.state.tasks[id];
+    if (!rec || rec.orphaned || !this.settings.apiToken) return;
+    new ProjectModal(this.app, this.state, this.state.remote[id]?.projectId, (name, chosen) => {
+      // The move goes through a `#[Name]` reference, which can't hold a `]` or tell same-named projects apart.
+      if (name.includes("]")) {
+        new Notice(`Can't move a task to “${name}” from here, because of the ]. Use Todoist instead.`);
+        return;
+      }
+      if (chosen && this.engine.findProject(name) !== chosen) {
+        new Notice(`More than one project is called “${name}”, so it can't be picked from here. Use Todoist instead.`);
+        return;
+      }
+      void this.guard(() => this.addRefAndPush(id, `#[${name}]`, `moving ${id} to project "${name}"`), true);
+    }).open();
+  }
+
+  // ------------------------------------------------------------ due date picker
+
+  /** Pick a synced task's due date, from a click on its chip's date. */
+  private changeDue(id: string): void {
+    if (!this.engine.isLinked(id) || !this.settings.apiToken) return;
+    const meta = this.state.remote[id];
+    new DueModal(this.app, meta?.due ?? null, !!meta?.recurring, (pick) => {
+      void (async () => {
+        // Save open editors first, so the pull that writes the new date doesn't race unsaved text.
+        await this.saveViewsOf(this.state.tasks[id]?.path ?? "");
+        await this.guard(() => this.engine.changeDue(id, pick), true);
+        this.refresh();
+      })();
+    }).open();
+  }
+
+  /** Save every open editor of `path`. */
+  private async saveViewsOf(path: string): Promise<void> {
+    const views: MarkdownView[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof MarkdownView && leaf.view.file?.path === path) views.push(leaf.view);
+    });
+    for (const v of views) await v.save();
+  }
+
+  // ------------------------------------------------------------ priority picker
+
+  /** Pick a synced task's priority, from a click on its chip's priority. */
+  private changePriority(id: string): void {
+    if (!this.engine.isLinked(id) || !this.settings.apiToken) return;
+    const current = 5 - (this.state.remote[id]?.priority ?? 1); // Todoist's 4 is p1, and 1 is p4
+    new PriorityModal(this.app, current, (p) => {
+      void this.guard(() => this.addRefAndPush(id, `p${p}`, `setting ${id} to p${p}`), true);
+    }).open();
+  }
+
+  /**
+   * Add a reference (`#[Project]`, `p2`) to a task's line and push the note straight away, so a
+   * change picked on the chip goes the same way as a typed reference: a nested line filed in another
+   * project moves out of its block, a missing project is created, and if Todoist can't be reached
+   * the reference stays on the line until it can.
+   */
+  private async addRefAndPush(id: string, ref: string, what: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(this.state.tasks[id]?.path ?? "");
+    if (!(file instanceof TFile)) return;
+    await this.saveViewsOf(file.path); // so the write below doesn't race their unsaved text
+    this.origin.localEdit(file.path, Date.now()); // the user's own change, so pushed straight away
+    let added = false;
+    await this.app.vault.process(file, (content) => {
+      const lines = content.split("\n");
+      const at = findLineByMarker(lines, id);
+      if (at < 0) return content;
+      lines[at] = withRef(lines[at], ref);
+      added = true;
+      return lines.join("\n");
+    });
+    if (!added) return;
+    this.log(`${file.path}: ${what} (chip)`);
+    await this.engine.pushFile(file.path);
+    this.refresh();
+  }
+
+  /** The editor showing `path` in live preview or source mode, if any (the active one first). */
+  private editorFor(path: string): Editor | undefined {
+    const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (active?.file?.path === path && active.getMode() === "source") return active.editor;
+    let found: Editor | undefined;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const v = leaf.view;
+      if (!found && v instanceof MarkdownView && v.file?.path === path && v.getMode() === "source") found = v.editor;
+    });
+    return found;
   }
 
   // ------------------------------------------------------------ log
@@ -289,6 +565,10 @@ export default class InlineTasksPlugin extends Plugin {
     this.dirty.clear();
     for (const path of paths) {
       if (!(this.app.vault.getAbstractFileByPath(path) instanceof TFile)) continue;
+      if (this.picking.has(path)) {
+        this.dirty.add(path); // pushed once the label picker closes
+        continue;
+      }
       const status = this.origin.status(path, Date.now());
       // Changed on another device (or by another app): let that device push it first.
       if (!force && status.hold) {
@@ -303,7 +583,8 @@ export default class InlineTasksPlugin extends Plugin {
     }
     // A task linked on another device arrived here: fetch its project and due date for the chip now,
     // rather than at the next scheduled pull.
-    if (this.engine.missingDetails().length) await this.runPull();
+    // Or a due date in words was sent: fetch the date Todoist worked out, to write it to the line.
+    if (this.engine.takePullRequest() || this.engine.missingDetails().length) await this.runPull();
     else this.refresh();
   }
 

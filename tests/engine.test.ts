@@ -1,6 +1,9 @@
+import { generateKeyBetween } from "fractional-indexing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { emptyState, type SyncState } from "../src/sync/state";
+import { blockEnd, withProjectRef, withRef } from "../src/parse/taskLine";
+import { importLines, withMissingSubtasks } from "../src/sync/importTask";
+import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
 
 /** In-memory Todoist that understands the handful of sync commands we send. */
@@ -20,6 +23,28 @@ class FakeTodoist {
     { id: "L2", name: "PhoneCall", seq: 0 },
   ];
 
+  /** Stands in for Todoist's date parsing: any words → this date (recurring if "every ..."). */
+  static WORDS_DATE = "2030-01-15";
+  private due(d: { date?: string; string?: string } | null | undefined) {
+    if (!d) return null;
+    if (d.string) return { date: FakeTodoist.WORDS_DATE, string: d.string, is_recurring: /^every\b/i.test(d.string) };
+    return d as { date: string };
+  }
+
+  /** An order key after every existing subtask of `parent`, as Todoist gives a task added or moved there. */
+  private lastKey(parent: string | null | undefined): string {
+    const keys = [...this.items.values()].filter((i) => (i.parent_id ?? null) === (parent ?? null) && i.order_key).map((i) => i.order_key!);
+    return generateKeyBetween(keys.sort().at(-1) ?? null, null);
+  }
+
+  /** Open subtasks of `parent`, in Todoist's order. */
+  kids(parent: string): string[] {
+    return [...this.items.values()]
+      .filter((i) => i.parent_id === parent && !i.checked)
+      .sort((a, b) => (a.order_key! < b.order_key! ? -1 : 1))
+      .map((i) => i.id);
+  }
+
   http = async (req: HttpRequest) => {
     const form = new URLSearchParams(req.body);
     const commands: Command[] = form.has("commands") ? JSON.parse(form.get("commands")!) : [];
@@ -32,6 +57,7 @@ class FakeTodoist {
       this.seenUuids.add(c.uuid);
       const a = c.args as Record<string, any>;
       if (typeof a.project_id === "string" && temp_id_mapping[a.project_id]) a.project_id = temp_id_mapping[a.project_id];
+      if (typeof a.parent_id === "string" && temp_id_mapping[a.parent_id]) a.parent_id = temp_id_mapping[a.parent_id];
       if (c.type === "label_add") {
         this.labels.push({ id: `LX${this.labels.length}`, name: a.name, seq: ++this.seq });
       } else if (c.type === "project_add") {
@@ -40,20 +66,34 @@ class FakeTodoist {
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
       } else if (c.type === "item_add") {
         const id = `T${this.nextId++}`;
+        const parent = a.parent_id ? this.items.get(a.parent_id) : undefined;
+        if (a.parent_id && !parent) throw new Error(`unknown parent ${a.parent_id}`);
         this.items.set(id, {
-          id, content: a.content, description: a.description, project_id: a.project_id ?? "inbox",
-          checked: false, is_deleted: false, priority: 1, due: a.due ?? null, labels: a.labels ?? [], seq: ++this.seq,
+          id, content: a.content, description: a.description, project_id: a.project_id ?? parent?.project_id ?? "inbox",
+          ...(parent ? { parent_id: parent.id } : {}),
+          order_key: this.lastKey(parent?.id),
+          checked: false, is_deleted: false, priority: a.priority ?? 1, due: this.due(a.due), labels: a.labels ?? [], seq: ++this.seq,
         });
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
       } else {
         const it = this.items.get(a.id)!;
         if (c.type === "item_update") {
           if ("content" in a) it.content = a.content;
-          if ("due" in a) it.due = a.due;
+          if ("due" in a) it.due = this.due(a.due);
           if ("labels" in a) it.labels = a.labels;
+          if ("priority" in a) it.priority = a.priority;
+          if ("order_key" in a) it.order_key = a.order_key;
         } else if (c.type === "item_close") it.checked = true;
         else if (c.type === "item_uncomplete") it.checked = false;
-        else if (c.type === "item_move") it.project_id = a.project_id;
+        else if (c.type === "item_move" && a.parent_id) {
+          it.order_key = this.lastKey(a.parent_id);
+          it.parent_id = a.parent_id;
+          it.project_id = this.items.get(a.parent_id)!.project_id;
+        } else if (c.type === "item_move") {
+          it.order_key = this.lastKey(null);
+          it.project_id = a.project_id;
+          it.parent_id = null;
+        }
         it.seq = ++this.seq;
       }
     }
@@ -321,6 +361,24 @@ describe("SyncEngine", () => {
       expect(todoist.items.get("T1")!.content).toBe("Call Bob"); // the reference never reaches the task text
     });
 
+    it("moves a dated task to the project picked on its chip, and back to the Inbox", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      const pick = (name: string) => vault.files.set("Note.md", withProjectRef(vault.files.get("Note.md")!, name));
+      pick("Work");
+      await engine.pushFile("Note.md");
+      expect(projectOf("T1")).toBe("P2");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      pick("Inbox");
+      await engine.pushFile("Note.md");
+      expect(projectOf("T1")).toBe("inbox");
+      expect(state.remote["T1"].projectId).toBe("inbox");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:T1%%");
+      expect(todoist.items.get("T1")!.content).toBe("Call Bob");
+    });
+
     it("leaves the reference alone while the cursor is on the line", async () => {
       await engine.pull();
       vault.files.set("Note.md", "- [ ] Call Bob");
@@ -371,6 +429,570 @@ describe("SyncEngine", () => {
       await engine.pushFile("Note.md");
       expect(todoist.projects.some((p) => p.name === "Garden")).toBe(false);
       expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob #[Garden] %%td:T1%%");
+    });
+  });
+
+  describe("p1–p4 priorities", () => {
+    it("creates a task with its priority and strips it", async () => {
+      vault.files.set("Note.md", "- [ ] Call the dentist p1 @PhoneCall 📅 2026-11-10");
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")).toMatchObject({ content: "Call the dentist", priority: 4, labels: ["PhoneCall"] });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call the dentist 📅 2026-11-10 %%td:T1%%");
+      expect(state.remote.T1.priority).toBe(4);
+    });
+
+    it("changes a synced task's priority, and p4 clears it", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob p2");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.priority).toBe(3);
+      vault.files.set("Note.md", "- [ ] Call Bob p4 %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.priority).toBe(1);
+      expect(todoist.items.get("T1")!.content).toBe("Call Bob");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+
+    it("sets the priority picked on the chip on a dated subtask, and p4 clears it", async () => {
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      const pick = (p: number) => {
+        const lines = vault.files.get("Note.md")!.split("\n");
+        lines[1] = withRef(lines[1], `p${p}`);
+        vault.files.set("Note.md", lines.join("\n"));
+      };
+      pick(1);
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")).toMatchObject({ priority: 4, content: "Book train", parent_id: "T1" });
+      expect(state.remote.T2.priority).toBe(4); // chip updates before the next pull
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+      pick(4);
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")!.priority).toBe(1);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+    });
+
+    it("leaves it on the line while the line is being edited", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", "- [ ] Call Bob p1 %%td:T1%%");
+      expect((await engine.pushFile("Note.md", { skipLine: 0 })).deferred).toBe(true);
+      expect(todoist.items.get("T1")!.priority).toBe(1);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob p1 %%td:T1%%");
+    });
+
+    it("strips it without sending anything when the task already has that priority", async () => {
+      await engine.pull(); // knows the Inbox, so the new task's details are recorded
+      vault.files.set("Note.md", "- [ ] Call Bob p3");
+      await engine.pushFile("Note.md");
+      const calls = todoist.calls.length;
+      vault.files.set("Note.md", "- [ ] Call Bob p3 %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(calls);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+  });
+
+  describe("nested checkboxes as subtasks", () => {
+    const parentOf = (content: string) => [...todoist.items.values()].find((i) => i.content === content)?.parent_id;
+
+    it("creates a line nested under a synced task as its subtask, in its project", async () => {
+      await engine.pull(); // learn the projects
+      vault.files.set("Note.md", "- [ ] Plan trip #[Work]");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", vault.files.get("Note.md")! + "\n\t- [ ] Book hotel\n    - [ ] Book flights");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")).toMatchObject({ content: "Book hotel", parent_id: "T1", project_id: "P2" });
+      expect(todoist.items.get("T3")).toMatchObject({ content: "Book flights", parent_id: "T1", project_id: "P2" });
+      expect(state.remote["T2"]?.projectId).toBe("P2"); // chip known without a pull
+    });
+
+    it("creates a new task and its new subtasks together, nested any depth", async () => {
+      vault.files.set("Note.md", "- [ ] Plan trip\n\t- [ ] Book flights\n\t\t- [ ] Pick seats\n\t- [ ] Book hotel");
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(1); // one request
+      expect(parentOf("Plan trip")).toBeUndefined();
+      expect(parentOf("Book flights")).toBe("T1");
+      expect(parentOf("Pick seats")).toBe("T2");
+      expect(parentOf("Book hotel")).toBe("T1");
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Plan trip %%td:T1%%\n\t- [ ] Book flights %%td:T2%%\n\t\t- [ ] Pick seats %%td:T3%%\n\t- [ ] Book hotel %%td:T4%%",
+      );
+    });
+
+    it("waits for a parent that's still being typed", async () => {
+      vault.files.set("Note.md", "- [ ] Plan tr\n\t- [ ] Book hotel");
+      const r = await engine.pushFile("Note.md", { skipLine: 0 });
+      expect(r.deferred).toBe(true);
+      expect(todoist.items.size).toBe(0);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("Plan tr", "Plan trip"));
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.content).toBe("Plan trip");
+      expect(parentOf("Book hotel")).toBe("T1");
+    });
+
+    it("makes top-level tasks of lines not nested under a syncing checkbox", async () => {
+      await engine.pull(); // learn the projects
+      vault.files.set(
+        "Note.md",
+        ["- Shopping", "\t- [ ] Milk", "- [ ] Private #notodoist", "\t- [ ] Eggs", "- [ ] Trip", "\t- [ ] Book train #[Work]", "", "  Some text", "- [ ] Bread"].join("\n"),
+      );
+      await engine.pushFile("Note.md");
+      for (const c of ["Milk", "Eggs", "Book train", "Bread"]) expect(parentOf(c)).toBeUndefined();
+      expect([...todoist.items.values()].find((i) => i.content === "Book train")!.project_id).toBe("P2");
+    });
+
+    it("moves a new nested line with a #[Project] out of its block, as a top-level task there", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train #[Work]\n\t- [ ] Pack");
+      await engine.pushFile("Note.md");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Pack %%td:T3%%\n- [ ] Book train %%td:T2%%");
+      const calls = todoist.calls.length;
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(calls);
+      expect(parentOf("Book train")).toBeUndefined();
+      expect(todoist.items.get("T2")!.project_id).toBe("P2");
+    });
+
+    it("moves a synced subtask filed in another project out of its block, with its own subtasks", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train\n\t\t- [ ] Seats\n\t- [ ] Pack");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("Book train", "Book train #[Work]"));
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")).toMatchObject({ project_id: "P2", parent_id: null });
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Trip %%td:T1%%\n\t- [ ] Pack %%td:T4%%\n- [ ] Book train %%td:T2%%\n\t- [ ] Seats %%td:T3%%",
+      );
+      const calls = todoist.calls.length;
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(calls + 1); // just the pull: nothing moved back
+    });
+  });
+
+  describe("indenting and moving synced lines", () => {
+    const parentOf = (id: string) => todoist.items.get(id)?.parent_id ?? null;
+    const edit = (from: string, to: string) => vault.files.set("Note.md", vault.files.get("Note.md")!.replace(from, to));
+    const moves = () => todoist.calls.flat().filter((c) => c.type === "item_move").map((c) => c.args);
+    /** Indent "Book hotel" and its subtasks one level, as Obsidian's Tab on a list item does. */
+    const indentHotel = (above = "") =>
+      edit("- [ ] Book hotel", `${above}\t- [ ] Book hotel`) &&
+      edit("\t- [ ] Book flights", "\t\t- [ ] Book flights") &&
+      edit("\t\t- [ ] Pick seats", "\t\t\t- [ ] Pick seats");
+
+    beforeEach(async () => {
+      await engine.pull();
+      // T1 Plan trip (Work), T2 Book hotel, T3 Book flights (subtask of T1), T4 Pick seats (of T3)
+      vault.files.set("Note.md", "- [ ] Plan trip #[Work]\n- [ ] Book hotel\n\t- [ ] Book flights\n\t\t- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect([parentOf("T2"), parentOf("T3"), parentOf("T4")]).toEqual([null, "T2", "T3"]);
+    });
+
+    it("makes an indented line a subtask of the task above, in that task's project", async () => {
+      indentHotel();
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T2", parent_id: "T1" }]); // its subtasks move with it
+      expect(todoist.items.get("T2")).toMatchObject({ parent_id: "T1", project_id: "P2" });
+      expect(state.remote["T2"]).toMatchObject({ parentId: "T1", projectId: "P2" });
+      await engine.pushFile("Note.md");
+      expect(moves().length).toBe(1); // once
+    });
+
+    it("makes an outdented line a top-level task in its project", async () => {
+      edit("\t\t- [ ] Pick seats", "- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", project_id: "inbox" }]);
+      expect(parentOf("T4")).toBeNull();
+    });
+
+    it("moves a line to the task it's now nested under", async () => {
+      edit("\t\t- [ ] Pick seats", "\t- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", parent_id: "T2" }]);
+    });
+
+    it("moves the line out to the top level for a task made top-level in Todoist", async () => {
+      todoist.edit("T4", { parent_id: null });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Plan trip %%td:T1%%\n- [ ] Book hotel %%td:T2%%\n\t- [ ] Book flights %%td:T3%%\n- [ ] Pick seats %%td:T4%%",
+      );
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]); // not sent back
+      expect(parentOf("T4")).toBeNull();
+    });
+
+    it("moves the line, with its subtasks, under the task it was moved under in Todoist", async () => {
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [ ] Plan trip %%td:T1%%", "- [ ] Plan trip %%td:T1%%\n\t- [ ] Visa"));
+      await engine.pushFile("Note.md"); // T5 Visa, under T1
+      todoist.edit("T2", { parent_id: "T1", order_key: generateKeyBetween(null, todoist.items.get("T5")!.order_key!) });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(
+        "- [ ] Plan trip %%td:T1%%\n\t- [ ] Book hotel %%td:T2%%\n\t\t- [ ] Book flights %%td:T3%%\n\t\t\t- [ ] Pick seats %%td:T4%%\n\t- [ ] Visa %%td:T5%%",
+      );
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]);
+    });
+
+    it("keeps the note's nesting when it was changed in both places", async () => {
+      todoist.edit("T4", { parent_id: null }); // out to the top level, in Todoist
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("\t\t- [ ] Pick seats", "\t- [ ] Pick seats")); // under T2, here
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toContain("\n\t- [ ] Pick seats %%td:T4%%");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", parent_id: "T2" }]);
+    });
+
+    it("leaves the line where it is when moved under a task that isn't in the note", async () => {
+      todoist.items.set("T9", { id: "T9", content: "Elsewhere", description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null, seq: ++todoist.seq });
+      todoist.edit("T4", { parent_id: "T9" });
+      const before = vault.files.get("Note.md");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(before);
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]); // nor moved back
+    });
+
+    it("moves a completed task only once it's unticked", async () => {
+      edit("\t\t- [ ] Pick seats", "- [x] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]);
+      edit("- [x] Pick seats", "- [ ] Pick seats");
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", project_id: "inbox" }]);
+    });
+
+    it("waits to move a line under a new task until that task is created", async () => {
+      indentHotel("- [ ] Hotels\n");
+      const r = await engine.pushFile("Note.md");
+      expect(r.deferred).toBe(true);
+      expect(moves()).toEqual([]);
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T2", parent_id: "T5" }]);
+    });
+
+    it("fetches the parent of tasks synced before parents were tracked, then moves them", async () => {
+      for (const meta of Object.values(state.remote)) delete meta.parentId; // as saved by an older version
+      for (const rec of Object.values(state.tasks)) delete rec.parent;
+      await engine.pushFile("Note.md"); // first sight: nesting noted
+      expect(engine.missingDetails().sort()).toEqual(["T1", "T2", "T3", "T4"]);
+      edit("\t\t- [ ] Pick seats", "- [ ] Pick seats");
+      expect((await engine.pushFile("Note.md")).deferred).toBe(true);
+      expect(moves()).toEqual([]);
+      await engine.pull(); // full sync, for the missing details
+      expect(state.remote["T4"].parentId).toBe("T3");
+      expect(engine.missingDetails()).toEqual([]);
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([{ id: "T4", project_id: "inbox" }]);
+    });
+
+    it("takes an imported or pasted line's nesting as it finds it", async () => {
+      todoist.items.set("T9", { id: "T9", content: "Pack", description: "", project_id: "P2", checked: false, is_deleted: false, priority: 1, due: null, parent_id: "T1", seq: ++todoist.seq });
+      edit("- [ ] Book hotel", "- [ ] Pack %%td:T9%%\n- [ ] Book hotel");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(moves()).toEqual([]);
+      expect(parentOf("T9")).toBe("T1");
+    });
+  });
+
+  describe("subtask order", () => {
+    const keyOf = (id: string) => todoist.items.get(id)!.order_key!;
+    const reorders = () => todoist.calls.flat().filter((c) => c.type === "item_update" && "order_key" in c.args);
+    const note = () => vault.files.get("Note.md")!;
+
+    beforeEach(async () => {
+      await engine.pull();
+      // T1 Trip; T2 A, T3 B (with T4 B1 under it), T5 C
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] A\n\t- [ ] B\n\t\t- [ ] B1\n\t- [ ] C");
+      await engine.pushFile("Note.md");
+      expect(todoist.kids("T1")).toEqual(["T2", "T3", "T5"]);
+      expect(reorders()).toEqual([]);
+    });
+
+    it("sends a reorder made in the note, moving only the task that moved", async () => {
+      vault.files.set("Note.md", "- [ ] Trip %%td:T1%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.kids("T1")).toEqual(["T5", "T2", "T3"]);
+      expect(reorders().map((c) => c.args.id)).toEqual(["T5"]);
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(reorders().length).toBe(1); // settled
+      expect(note()).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%");
+    });
+
+    it("rearranges the lines for a reorder made in Todoist, with what's nested under them", async () => {
+      todoist.edit("T5", { order_key: generateKeyBetween(null, keyOf("T2")) });
+      await engine.pull();
+      expect(note()).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%");
+      await engine.pushFile("Note.md");
+      expect(reorders()).toEqual([]); // nothing sent back
+    });
+
+    it("lets the note win when both sides were reordered", async () => {
+      todoist.edit("T5", { order_key: generateKeyBetween(null, keyOf("T2")) }); // C first, in Todoist
+      vault.files.set("Note.md", note().replace("\t- [ ] A %%td:T2%%\n", "").replace("\t- [ ] C %%td:T5%%", "\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%"));
+      await engine.pushFile("Note.md"); // B, C, A in the note
+      expect(todoist.kids("T1")).toEqual(["T3", "T5", "T2"]);
+      await engine.pull();
+      expect(note()).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%");
+    });
+
+    it("leaves subtasks that aren't in the note in their places", async () => {
+      todoist.items.set("X", {
+        id: "X", content: "Not in note", description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null,
+        parent_id: "T1", order_key: generateKeyBetween(keyOf("T2"), keyOf("T3")), seq: ++todoist.seq,
+      });
+      await engine.pull();
+      vault.files.set("Note.md", note().replace("\t- [ ] A %%td:T2%%\n", "").replace("\t\t- [ ] B1 %%td:T4%%", "\t\t- [ ] B1 %%td:T4%%\n\t- [ ] A %%td:T2%%"));
+      await engine.pushFile("Note.md"); // B, A, C in the note
+      const kids = todoist.kids("T1");
+      expect(kids.filter((k) => k !== "X")).toEqual(["T3", "T2", "T5"]);
+      expect(reorders().length).toBe(1); // one task moved
+      // X keeps its place relative to the tasks that didn't move (A and C here).
+      expect(kids.indexOf("T2") < kids.indexOf("X") && kids.indexOf("X") < kids.indexOf("T5")).toBe(true);
+    });
+
+    it("puts a subtask typed between others in its place", async () => {
+      vault.files.set("Note.md", note().replace("\t- [ ] B %%td:T3%%", "\t- [ ] A2\n\t- [ ] B %%td:T3%%"));
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T6")!.content).toBe("A2");
+      expect(todoist.kids("T1")).toEqual(["T2", "T6", "T3", "T5"]);
+    });
+
+    it("doesn't rearrange lines with other text among them", async () => {
+      vault.files.set("Note.md", note().replace("\t- [ ] C", "\tA note about C\n\t- [ ] C"));
+      await engine.pushFile("Note.md");
+      todoist.edit("T5", { order_key: generateKeyBetween(null, keyOf("T2")) });
+      const before = note();
+      await engine.pull();
+      expect(note()).toBe(before);
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(note()).toBe(before);
+      expect(reorders()).toEqual([]); // nor is the note's order forced on Todoist
+    });
+  });
+
+  describe("subtask counts", () => {
+    const item = (id: string, content: string, extra: Partial<TodoistItem> = {}) =>
+      todoist.items.set(id, {
+        id, content, description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null,
+        seq: ++todoist.seq, ...extra,
+      });
+
+    it("counts open subtasks from Todoist, linked to a note or not", async () => {
+      vault.files.set("Note.md", "- [ ] Plan trip");
+      await engine.pushFile("Note.md"); // T1
+      item("X1", "Book hotel", { parent_id: "T1" });
+      item("X2", "Book flights", { parent_id: "T1" });
+      item("X3", "Pick seats", { parent_id: "X2" }); // a subtask's subtask isn't counted
+      item("X4", "Done one", { parent_id: "T1", checked: true });
+      await engine.pull();
+      expect(subtaskCount(state, "T1")).toBe(2);
+      expect(subtaskCount(state, "X2")).toBe(1);
+
+      // Changes in Todoist reach it on the next (incremental) pull.
+      todoist.edit("X1", { checked: true });
+      todoist.edit("X4", { checked: false });
+      item("X5", "Pack", { parent_id: "T1" });
+      todoist.edit("X2", { parent_id: null });
+      await engine.pull();
+      expect(subtaskCount(state, "T1")).toBe(2); // X4, X5
+    });
+
+    it("updates the count straight away for changes sent from the note", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Plan trip\n\t- [ ] Book hotel\n\t- [ ] Book flights");
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(2);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [ ] Book hotel", "- [x] Book hotel"));
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(1);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("\t- [ ] Book flights", "- [ ] Book flights"));
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(0);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [x] Book hotel", "- [ ] Book hotel"));
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(1);
+    });
+
+    it("fills in counts once for state saved before they were tracked", async () => {
+      item("X1", "Book hotel", { parent_id: "T9" });
+      await engine.pull();
+      delete (state as Partial<SyncState>).subtasks;
+      delete state.subtasksSynced;
+      todoist.calls.length = 0;
+      await engine.pull();
+      expect(subtaskCount(state, "T9")).toBe(1);
+    });
+  });
+
+  describe("importing from Todoist", () => {
+    const add = (id: string, content: string, extra: Partial<TodoistItem> = {}) =>
+      todoist.items.set(id, {
+        id, content, description: "", project_id: "P2", checked: false, is_deleted: false, priority: 1, due: null,
+        labels: [], seq: ++todoist.seq, ...extra,
+      });
+
+    it("lists open tasks and builds lines with subtasks in Todoist's order", async () => {
+      add("A", "Plan trip today", { due: { date: "2030-02-01" }, priority: 4, labels: ["PhoneCall"] });
+      add("B", "Book hotel", { parent_id: "A", child_order: 2 });
+      add("C", "Book flights", { parent_id: "A", child_order: 1 });
+      add("D", "Pick seats", { parent_id: "C", child_order: 1 });
+      add("E", "Done already", { checked: true });
+      add("F", "Linked elsewhere", { parent_id: "A", child_order: 3 });
+      state.tasks["F"] = { path: "Other.md", base: { text: "Linked elsewhere", checked: false, due: null } };
+      const before = state.syncToken;
+
+      const open = await engine.openTasks();
+      expect(open.map((i) => i.id).sort()).toEqual(["A", "B", "C", "D", "F"]);
+      expect(state.syncToken).toBe(before); // a pull still sees everything since the last one
+
+      const { lines, items } = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "  ", "\t");
+      expect(lines).toEqual([
+        "  - [ ] Plan trip today 📅 2030-02-01 %%td:A%%",
+        "  \t- [ ] Book flights %%td:C%%",
+        "  \t\t- [ ] Pick seats %%td:D%%",
+        "  \t- [ ] Book hotel %%td:B%%",
+      ]);
+      expect(items.map((i) => i.id)).toEqual(["A", "C", "D", "B"]);
+
+      // Without subtasks: just the task.
+      const alone = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "", "\t", false);
+      expect(alone.lines).toEqual(["- [ ] Plan trip today 📅 2030-02-01 %%td:A%%"]);
+      expect(alone.items.map((i) => i.id)).toEqual(["A"]);
+    });
+
+    it("adds a synced task's missing subtasks where Todoist has them", async () => {
+      add("A", "Plan trip");
+      add("B", "Book hotel", { parent_id: "A", order_key: "a2" });
+      add("C", "Book flights", { parent_id: "A", order_key: "a1" });
+      add("D", "Pick seats", { parent_id: "C", order_key: "a0" });
+      add("E", "Pack", { parent_id: "A", order_key: "a3" });
+      add("F", "Visa", { parent_id: "A", order_key: "a0" });
+      for (const id of ["A", "B"]) state.tasks[id] = { path: "Note.md", base: { text: "", checked: false, due: null } };
+      const open = await engine.openTasks();
+      const note = ["# Trip", "  - [ ] Plan trip %%td:A%%", "  \t- [ ] Book hotel %%td:B%%", "  \t\tnotes on hotels", "- [ ] Other"];
+      const { lines, added } = withMissingSubtasks(note, 1, "A", open, (id) => engine.isLinked(id), "\t");
+      expect(lines).toEqual([
+        "# Trip",
+        "  - [ ] Plan trip %%td:A%%",
+        "  \t- [ ] Visa %%td:F%%", // first in Todoist: before Book hotel
+        "  \t- [ ] Book flights %%td:C%%",
+        "  \t\t- [ ] Pick seats %%td:D%%",
+        "  \t- [ ] Book hotel %%td:B%%",
+        "  \t\tnotes on hotels",
+        "  \t- [ ] Pack %%td:E%%", // after Book hotel and what's nested under it
+        "- [ ] Other",
+      ]);
+      expect(added.map((a) => a.item.id)).toEqual(["F", "C", "D", "E"]);
+      expect(added[1].line).toBe("  \t- [ ] Book flights %%td:C%%");
+      expect(subtaskCount(state, "A")).toBe(4); // the read refreshed the counts
+    });
+
+    it("finds the end of the block nested under a line", () => {
+      const lines = ["- [ ] A", "\t- [ ] B", "", "\t\tnotes", "", "- [ ] C", "\t- [ ] D", "- [ ] E"];
+      expect([0, 1, 5, 6, 7].map((i) => blockEnd(lines, i))).toEqual([3, 3, 6, 6, 7]);
+    });
+
+    it("links imported lines, so they sync as existing tasks", async () => {
+      add("A", "Plan trip today p1", { due: { date: "2030-02-01" }, priority: 4, labels: ["PhoneCall"] });
+      add("B", "Book hotel", { parent_id: "A" });
+      const open = await engine.openTasks();
+      const { lines, items } = importLines(open[0], open, (id) => engine.isLinked(id), "", "\t");
+      await engine.registerImport("Note.md", items.map((item, i) => ({ item, line: lines[i] })));
+      expect(state.remote["A"]).toMatchObject({ projectId: "P2", priority: 4, labels: ["PhoneCall"], due: "2030-02-01" });
+      expect(engine.isLinked("A")).toBe(true);
+
+      vault.files.set("Note.md", `# Trip\n${lines.join("\n")}`);
+      const calls = todoist.calls.length;
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(todoist.calls.length).toBe(calls + 1); // just the pull: nothing created or changed
+      expect(vault.files.get("Note.md")).toBe(`# Trip\n${lines.join("\n")}`);
+      expect(todoist.items.get("A")).toMatchObject({ content: "Plan trip today p1", priority: 4 });
+
+      // Edits on either side sync as usual.
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [ ] Book hotel", "- [x] Book hotel"));
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("B")!.checked).toBe(true);
+    });
+  });
+
+  describe("titles from Todoist", () => {
+    it("keeps reference-like words in a title edited in Todoist", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      todoist.edit("T1", { content: "Call Bob today re p2 @home" });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob today re p2 @home %%td:T1%%");
+      const calls = todoist.calls.length;
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(calls); // nothing to send
+      expect(todoist.items.get("T1")).toMatchObject({ content: "Call Bob today re p2 @home", priority: 1, due: null });
+    });
+
+    it("still reads references typed after such a title", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      todoist.edit("T1", { content: "Call Bob today" });
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob today and Sue p1 %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")).toMatchObject({ content: "Call Bob today and Sue", priority: 4, due: null });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob today and Sue %%td:T1%%");
+    });
+
+    it("treats an adopted line's words as its title", async () => {
+      todoist.items.set("T7", { id: "T7", content: "Lunch friday", description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null, seq: ++todoist.seq });
+      vault.files.set("Note.md", "- [ ] Lunch friday %%td:T7%%");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(todoist.items.get("T7")).toMatchObject({ content: "Lunch friday", due: null });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Lunch friday %%td:T7%%");
+    });
+  });
+
+  describe("due dates in words", () => {
+    const D = FakeTodoist.WORDS_DATE;
+
+    it("creates a task with the words for Todoist to parse, then writes the date to the line", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Send invoice next friday p2");
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.at(-1)![0].args.due).toEqual({ string: "next friday", lang: "en" });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Send invoice %%td:T1%%");
+      expect(engine.takePullRequest()).toBe(true);
+      expect(engine.takePullRequest()).toBe(false); // once
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Send invoice 📅 ${D} %%td:T1%%`);
+      expect(state.tasks.T1.base.due).toBe(D);
+    });
+
+    it("changes a synced task's date, and the words beat an edited 📅", async () => {
+      vault.files.set("Note.md", "- [ ] Pay rent 📅 2026-11-01");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Pay rent every month 📅 2026-12-01 %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.due).toMatchObject({ date: D, is_recurring: true });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Pay rent 📅 2026-12-01 %%td:T1%%");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Pay rent 📅 ${D} %%td:T1%%`);
+      expect(state.remote.T1.recurring).toBe(true);
+    });
+
+    it("leaves the words on the line while it's being edited", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", "- [ ] Call Bob tomorrow %%td:T1%%");
+      expect((await engine.pushFile("Note.md", { skipLine: 0 })).deferred).toBe(true);
+      expect(todoist.items.get("T1")!.due).toBeNull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob tomorrow %%td:T1%%");
     });
   });
 
@@ -427,6 +1049,85 @@ describe("SyncEngine", () => {
     });
   });
 
+  describe("due date picker", () => {
+    beforeEach(async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+    });
+
+    it("sets a date, and the line's 📅 follows", async () => {
+      expect(await engine.changeDue("T2", { date: "2026-11-14" })).toBe(true);
+      expect(todoist.items.get("T2")!.due).toMatchObject({ date: "2026-11-14" });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-14 %%td:T2%%");
+      expect(state.remote.T2.due).toBe("2026-11-14");
+      const calls = todoist.calls.length;
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.slice(calls).some((c) => c.length)).toBe(false); // nothing left to push
+    });
+
+    it("gives a task without a date one", async () => {
+      await engine.changeDue("T1", { date: "2026-11-09" });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip 📅 2026-11-09 %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+    });
+
+    it("sends words for Todoist to work out, including a repeat", async () => {
+      await engine.changeDue("T2", { words: "every month" });
+      expect(todoist.items.get("T2")!.due).toMatchObject({ string: "every month", is_recurring: true });
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 ${FakeTodoist.WORDS_DATE} %%td:T2%%`);
+      expect(state.remote.T2.recurring).toBe(true);
+    });
+
+    it("removes the date", async () => {
+      await engine.changeDue("T2", null);
+      expect(todoist.items.get("T2")!.due).toBeNull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%%");
+    });
+  });
+
+  describe("label picker", () => {
+    beforeEach(async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      todoist.edit("T1", { labels: ["PhoneCall"] });
+      await engine.pull();
+    });
+
+    it("adds and removes labels, using Todoist's spelling", async () => {
+      expect(await engine.changeLabels("T1", ["waiting for"], ["phonecall"])).toBe(true);
+      expect(todoist.items.get("T1")!.labels).toEqual(["Waiting For"]);
+      expect(state.remote.T1.labels).toEqual(["Waiting For"]);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+
+    it("works from the task's labels as Todoist has them now", async () => {
+      todoist.edit("T1", { labels: ["PhoneCall", "Waiting For"] }); // added in Todoist since the last pull
+      await engine.changeLabels("T1", ["Errands"], ["PhoneCall"]);
+      expect(todoist.items.get("T1")!.labels).toEqual(["Waiting For", "Errands"]);
+    });
+
+    it("creates a missing label once", async () => {
+      await engine.changeLabels("T1", ["Errands", "errands"], []);
+      expect(todoist.labels.filter((l) => l.name.toLowerCase() === "errands")).toHaveLength(1);
+      expect(todoist.items.get("T1")!.labels).toEqual(["PhoneCall", "Errands"]);
+      expect(Object.values(state.labels).some((l) => l.name === "Errands")).toBe(true); // listed before the next pull
+    });
+
+    it("sends nothing when nothing changes", async () => {
+      const calls = todoist.calls.length;
+      await engine.changeLabels("T1", ["phonecall"], ["Waiting For"]);
+      expect(todoist.calls.slice(calls).some((c) => c.length)).toBe(false);
+    });
+
+    it("leaves a task deleted in Todoist alone", async () => {
+      state.tasks.T1.orphaned = true;
+      expect(await engine.changeLabels("T1", ["Errands"], [])).toBe(false);
+      expect(todoist.items.get("T1")!.labels).toEqual(["PhoneCall"]);
+    });
+  });
+
   it("does not create tasks on a device with creation disabled", async () => {
     settings.canCreate = false;
     vault.files.set("Note.md", "- [ ] phone task");
@@ -456,7 +1157,7 @@ describe("SyncEngine", () => {
   it("on a device with no sync state, links the markers already in the vault and fetches them", async () => {
     vault.files.set("Note.md", "- [ ] Call Bob");
     await engine.pushFile("Note.md");
-    todoist.edit("T1", { content: "Call Bob today", project_id: "P2" });
+    todoist.edit("T1", { content: "Call Bob soon", project_id: "P2" });
     vault.files.set("Templates/T.md", "- [ ] template %%td:T1%%");
     // A second device, starting empty.
     const fresh = { ...emptyState(), backfillDone: true };
@@ -465,7 +1166,7 @@ describe("SyncEngine", () => {
     expect(fresh.tasks.T1).toEqual({ path: "Note.md", base: { text: "Call Bob", checked: false, due: null } });
     await other.pull();
     expect(fresh.remote.T1?.projectId).toBe("P2");
-    expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob today %%td:T1%%"); // Todoist's edit merged in
+    expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob soon %%td:T1%%"); // Todoist's edit merged in
   });
 
   it("knows a task it just created without fetching it", async () => {
@@ -489,11 +1190,11 @@ describe("SyncEngine", () => {
   it("with noCreate, updates existing tasks but creates none (a change synced in from elsewhere)", async () => {
     vault.files.set("Note.md", "- [ ] Call Bob");
     await engine.pushFile("Note.md");
-    vault.files.set("Note.md", "- [ ] Call Bob today %%td:T1%%\n- [ ] typed on the phone");
+    vault.files.set("Note.md", "- [ ] Call Bob soon %%td:T1%%\n- [ ] typed on the phone");
     await engine.pushFile("Note.md", { noCreate: true });
     expect(todoist.items.size).toBe(1);
-    expect(todoist.items.get("T1")!.content).toBe("Call Bob today");
-    expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob today %%td:T1%%\n- [ ] typed on the phone");
+    expect(todoist.items.get("T1")!.content).toBe("Call Bob soon");
+    expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob soon %%td:T1%%\n- [ ] typed on the phone");
   });
 
   it("counts backfill candidates per folder", async () => {
