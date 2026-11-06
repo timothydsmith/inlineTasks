@@ -7,6 +7,12 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+### Added
+- `p1`–`p4` on a checkbox line sets the task's Todoist priority, on create or later (`p4` clears it). The word is removed from the line once applied, since the chip shows the priority.
+
+### Fixed
+- A `@` inside a bracketed project name, such as `#[Errands @home]`, no longer also adds a label.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added

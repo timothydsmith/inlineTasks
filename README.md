@@ -81,6 +81,21 @@ When the task next syncs, the labels are added to it and the references are remo
 - **Timing:** like project references, labels are applied once you move off the line, or straight away with **Sync now**. A task linked on another device waits until this device has fetched its current labels, so none are dropped.
 - **Mentions:** any `@word` on a synced checkbox line becomes a label, so write `at Sarah's` rather than `@Sarah` unless you mean the label.
 
+### Setting a priority
+
+Type `p1`, `p2`, `p3` or `p4` anywhere on a checkbox line, as in Todoist: `p1` is urgent and `p4` is none.
+
+```markdown
+- [ ] Call the dentist p1
+```
+
+When the task next syncs, its priority is set and the word is removed from the line. The chip shows P1–P3 from then on, and follows any change made in Todoist.
+
+- **New or synced tasks:** a new task is created with that priority, and a synced task's priority is changed. `p4` clears it.
+- **A word of its own:** `mp3`, `#p1`, `p1st` and `(p1)` don't count. The last one on the line wins.
+- **In a title:** a separate `p1`–`p4` word is always read as a priority, so "Review p2 draft" becomes "Review draft" at p2. Write it another way, such as "Review P-2 draft", to keep it.
+- **Timing:** like project and label references, it's applied once you move off the line, or straight away with **Sync now**.
+
 ### Excluding things
 - **Folders or notes** listed in settings (defaults to `Templates`). An entry matches a folder and everything inside it, or a single note by its path, e.g. `Journal/Private.md`.
 - **A whole note:** `todoist: false` in its frontmatter.
@@ -169,7 +184,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used.
 - **Labels:** can be added from a note but not removed. If a label is added in Todoist after this device last pulled and before an `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short.
-- **Not yet supported:** nested checkboxes as subtasks, editing priority inline, and Todoist query blocks.
+- **Not yet supported:** nested checkboxes as subtasks, and Todoist query blocks.
 
 ## Development
 

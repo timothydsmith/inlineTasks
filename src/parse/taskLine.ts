@@ -12,6 +12,8 @@
  *                      Stripped from the line once Todoist has applied it; the chip shows the project.
  * - `@label`, `@[Label name]`  add that Todoist label to the task (created if missing). Stripped
  *                      once applied, like a project reference; the chip shows the task's labels.
+ * - `p1` … `p4`        set the task's Todoist priority (p1 = urgent, p4 = none). A separate word;
+ *                      the last one wins. Stripped once applied; the chip shows the priority.
  */
 
 export interface TaskFields {
@@ -34,6 +36,8 @@ export interface ParsedTask extends TaskFields {
   projectRef: string | null;
   /** Labels named by `@label` / `@[Label name]` references on the line, in order, without duplicates. */
   labelRefs: string[];
+  /** Priority from a `p1`–`p4` word on the line, as written (1 = p1, urgent), or null. The last one wins. */
+  priorityRef: number | null;
 }
 
 const CHECKBOX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)\[(.)\]\s?(.*)$/;
@@ -48,6 +52,8 @@ const PROJECT_RE_G = /(^|\s)#\[([^\]\n]*)\]/g;
  * "call @Sarah." keeps its full stop. Only at line start or after a space, so emails don't match.
  */
 const LABEL_RE_G = /(^|\s)@(?:\[([^\]\n]*)\]|([^\s@[\]#()]*[^\s@[\]#().,;:!?'"]))/g;
+/** `p1`–`p4` as a word of its own (not `mp3`, `p1st` or `#p1`). */
+const PRIORITY_RE_G = /(^|\s)[pP]([1-4])(?=\s|$)/g;
 /** Names that must be written in the bracketed form. */
 const LABEL_NEEDS_BRACKETS = /[\s@[\]#()]|[.,;:!?'"]$/;
 const PENDING_PREFIX = "new-";
@@ -61,21 +67,21 @@ export function parseTaskLine(line: string): ParsedTask | null {
   const markerId = marker ? marker[1] : null;
   const due = DUE_RE.exec(rest);
 
+  // Each kind of reference is read from what's left once the previous kinds are removed, so a
+  // bracketed name like `#[Phase p1]` or `@[Errands @home]` doesn't also count as something else.
+  let s = rest.replace(MARKER_RE_G, "").replace(DUE_RE_G, "");
   let projectRef: string | null = null;
-  for (const p of rest.matchAll(PROJECT_RE_G)) projectRef = p[2].trim() || projectRef;
+  for (const p of s.matchAll(PROJECT_RE_G)) projectRef = p[2].trim() || projectRef;
+  s = s.replace(PROJECT_RE_G, "$1");
   const labelRefs: string[] = [];
-  for (const l of rest.matchAll(LABEL_RE_G)) {
+  for (const l of s.matchAll(LABEL_RE_G)) {
     const name = (l[2] ?? l[3]).trim();
     if (name && !labelRefs.some((x) => x.toLowerCase() === name.toLowerCase())) labelRefs.push(name);
   }
-
-  const text = rest
-    .replace(MARKER_RE_G, "")
-    .replace(DUE_RE_G, "")
-    .replace(PROJECT_RE_G, "$1")
-    .replace(LABEL_RE_G, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
+  s = s.replace(LABEL_RE_G, "$1");
+  let priorityRef: number | null = null;
+  for (const p of s.matchAll(PRIORITY_RE_G)) priorityRef = Number(p[2]);
+  const text = s.replace(PRIORITY_RE_G, "$1").replace(/\s+/g, " ").trim();
 
   return {
     prefix,
@@ -88,6 +94,7 @@ export function parseTaskLine(line: string): ParsedTask | null {
     excluded: OPT_OUT_RE.test(text) || text.length === 0,
     projectRef,
     labelRefs,
+    priorityRef,
   };
 }
 
@@ -101,6 +108,7 @@ export function markerFor(task: Pick<ParsedTask, "todoistId" | "pendingUuid">): 
 export function serializeTask(task: ParsedTask): string {
   const status = task.checked ? (task.status !== " " ? task.status : "x") : " ";
   let out = `${task.prefix}[${status}] ${task.text}`;
+  if (task.priorityRef) out += ` p${task.priorityRef}`;
   for (const l of task.labelRefs) out += ` ${labelRef(l)}`;
   if (task.projectRef) out += ` #[${task.projectRef}]`;
   if (task.due) out += ` 📅 ${task.due}`;

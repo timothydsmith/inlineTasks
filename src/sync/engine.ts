@@ -247,6 +247,8 @@ export class SyncEngine {
 
     /** Real task ids → the `@labels` to remove from their line, once applied. */
     const stripLabels = new Map<string, string[]>();
+    /** Real task ids → the `pN` to remove from their line, once applied. */
+    const stripPriorities = new Map<string, number>();
     /** Labels created by this push: key → name as created. */
     const newLabels = new Map<string, string>();
     /**
@@ -297,6 +299,7 @@ export class SyncEngine {
           if (!labels) continue; // a label can't be created on this device
           args.labels = labels;
         }
+        if (task.priorityRef) args.priority = toApiPriority(task.priorityRef);
         if (task.due) args.due = { date: task.due };
         // Same uuid on retry: Todoist de-duplicates commands it has already applied.
         commands.push({ type: "item_add", uuid: task.pendingUuid, temp_id: task.pendingUuid, args });
@@ -357,6 +360,25 @@ export class SyncEngine {
           }
         }
       }
+      // `p1`–`p4` on a synced task: set its priority, then strip it. Not while the line is being edited.
+      if (task.priorityRef) {
+        if (line === opts.skipLine) {
+          deferred = true;
+        } else {
+          const ref = task.priorityRef;
+          const priority = toApiPriority(ref);
+          if (meta?.priority === priority) {
+            stripPriorities.set(id, ref); // already set
+          } else {
+            const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, priority } };
+            commands.push(cmd);
+            onOk[cmd.uuid] = () => {
+              if (meta) meta.priority = priority;
+              stripPriorities.set(id, ref);
+            };
+          }
+        }
+      }
       if (adopted) continue;
 
       const { push } = merge(rec.base, local, rec.base, 0, 0);
@@ -377,7 +399,7 @@ export class SyncEngine {
     }
 
     if (!commands.length) {
-      await this.stripRefs(path, stripProjects, stripLabels);
+      await this.stripRefs(path, stripProjects, stripLabels, stripPriorities);
       await this.save();
       return { deferred };
     }
@@ -432,32 +454,46 @@ export class SyncEngine {
       if (!cmd || !projectId || !this.state.tasks[realId] || this.state.remote[realId]) continue;
       const due = cmd.args.due as { date: string } | undefined;
       const labels = (cmd.args.labels as string[] | undefined) ?? [];
-      this.state.remote[realId] = { projectId, priority: 1, due: due?.date ?? null, checked: false, labels };
+      const priority = (cmd.args.priority as number | undefined) ?? 1;
+      this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels };
     }
-    await this.stripRefs(path, stripProjects, stripLabels);
+    await this.stripRefs(path, stripProjects, stripLabels, stripPriorities);
 
     await this.save();
     return { deferred };
   }
 
   /**
-   * Remove applied references from synced lines: `#[Project]` for the ids in `projects`, and the
-   * named `@labels` for each id in `labels` (only those, in case another was typed meanwhile).
+   * Remove applied references from synced lines: `#[Project]` for the ids in `projects`, the named
+   * `@labels` for each id in `labels`, and the `pN` for each id in `priorities` (each only if it's
+   * still what was applied, in case another was typed meanwhile).
    */
-  private async stripRefs(path: string, projects: Set<string>, labels: Map<string, string[]>): Promise<void> {
-    if (!projects.size && !labels.size) return;
+  private async stripRefs(
+    path: string,
+    projects: Set<string>,
+    labels: Map<string, string[]>,
+    priorities: Map<string, number>,
+  ): Promise<void> {
+    if (!projects.size && !labels.size && !priorities.size) return;
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
       let changed = false;
-      for (const id of new Set([...projects, ...labels.keys()])) {
+      for (const id of new Set([...projects, ...labels.keys(), ...priorities.keys()])) {
         const idx = findLineByMarker(lines, id);
         const task = idx >= 0 ? parseTaskLine(lines[idx]) : null;
         if (!task) continue;
         const applied = new Set((labels.get(id) ?? []).map(labelKey));
         const labelRefs = task.labelRefs.filter((l) => !applied.has(labelKey(l)));
         const projectRef = projects.has(id) ? null : task.projectRef;
-        if (projectRef === task.projectRef && labelRefs.length === task.labelRefs.length) continue;
-        lines[idx] = serializeTask({ ...task, projectRef, labelRefs });
+        const priorityRef = priorities.get(id) === task.priorityRef ? null : task.priorityRef;
+        if (
+          projectRef === task.projectRef &&
+          labelRefs.length === task.labelRefs.length &&
+          priorityRef === task.priorityRef
+        ) {
+          continue;
+        }
+        lines[idx] = serializeTask({ ...task, projectRef, labelRefs, priorityRef });
         changed = true;
       }
       return changed ? lines.join("\n") : content;
@@ -474,7 +510,7 @@ export class SyncEngine {
         const task = parseTaskLine(lines[idx]);
         if (!task) continue;
         // The create carried the line's `#[Project]` and `@labels`, so the references have done their job.
-        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [] });
+        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [], priorityRef: null });
         this.state.tasks[realId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
       }
       return lines.join("\n");
@@ -654,6 +690,11 @@ export class SyncEngine {
 /** Comparison key for project names: case- and whitespace-insensitive. */
 export function projectKey(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** `pN` as written (1 = p1, urgent) → Todoist's API value (4 = urgent … 1 = none). */
+export function toApiPriority(p: number): number {
+  return 5 - p;
 }
 
 /** Labels match like projects: ignoring case and extra spaces. */

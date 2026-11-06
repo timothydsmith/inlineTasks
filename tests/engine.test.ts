@@ -42,7 +42,7 @@ class FakeTodoist {
         const id = `T${this.nextId++}`;
         this.items.set(id, {
           id, content: a.content, description: a.description, project_id: a.project_id ?? "inbox",
-          checked: false, is_deleted: false, priority: 1, due: a.due ?? null, labels: a.labels ?? [], seq: ++this.seq,
+          checked: false, is_deleted: false, priority: a.priority ?? 1, due: a.due ?? null, labels: a.labels ?? [], seq: ++this.seq,
         });
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
       } else {
@@ -51,6 +51,7 @@ class FakeTodoist {
           if ("content" in a) it.content = a.content;
           if ("due" in a) it.due = a.due;
           if ("labels" in a) it.labels = a.labels;
+          if ("priority" in a) it.priority = a.priority;
         } else if (c.type === "item_close") it.checked = true;
         else if (c.type === "item_uncomplete") it.checked = false;
         else if (c.type === "item_move") it.project_id = a.project_id;
@@ -371,6 +372,48 @@ describe("SyncEngine", () => {
       await engine.pushFile("Note.md");
       expect(todoist.projects.some((p) => p.name === "Garden")).toBe(false);
       expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob #[Garden] %%td:T1%%");
+    });
+  });
+
+  describe("p1–p4 priorities", () => {
+    it("creates a task with its priority and strips it", async () => {
+      vault.files.set("Note.md", "- [ ] Call the dentist p1 @PhoneCall 📅 2026-11-10");
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")).toMatchObject({ content: "Call the dentist", priority: 4, labels: ["PhoneCall"] });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call the dentist 📅 2026-11-10 %%td:T1%%");
+      expect(state.remote.T1.priority).toBe(4);
+    });
+
+    it("changes a synced task's priority, and p4 clears it", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob p2");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.priority).toBe(3);
+      vault.files.set("Note.md", "- [ ] Call Bob p4 %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.priority).toBe(1);
+      expect(todoist.items.get("T1")!.content).toBe("Call Bob");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+
+    it("leaves it on the line while the line is being edited", async () => {
+      vault.files.set("Note.md", "- [ ] Call Bob");
+      await engine.pushFile("Note.md");
+      vault.files.set("Note.md", "- [ ] Call Bob p1 %%td:T1%%");
+      expect((await engine.pushFile("Note.md", { skipLine: 0 })).deferred).toBe(true);
+      expect(todoist.items.get("T1")!.priority).toBe(1);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob p1 %%td:T1%%");
+    });
+
+    it("strips it without sending anything when the task already has that priority", async () => {
+      await engine.pull(); // knows the Inbox, so the new task's details are recorded
+      vault.files.set("Note.md", "- [ ] Call Bob p3");
+      await engine.pushFile("Note.md");
+      const calls = todoist.calls.length;
+      vault.files.set("Note.md", "- [ ] Call Bob p3 %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.length).toBe(calls);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
     });
   });
 

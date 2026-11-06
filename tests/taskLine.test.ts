@@ -48,6 +48,23 @@ describe("parseTaskLine", () => {
     expect(parseTaskLine("- [ ] @PhoneCall")!.excluded).toBe(true); // nothing to create
   });
 
+  it("extracts a p1–p4 priority from the text", () => {
+    const t = parseTaskLine("- [ ] Plan p2 roadmap P1 📅 2026-11-10")!;
+    expect(t.priorityRef).toBe(1); // last one wins, either case
+    expect(t.text).toBe("Plan roadmap");
+    for (const line of ["- [ ] Review mp3 files", "- [ ] Use #p1 tag", "- [ ] Win p1st", "- [ ] Try p5", "- [ ] Ref (p1)"]) {
+      expect(parseTaskLine(line)!.priorityRef).toBeNull();
+    }
+  });
+
+  it("doesn't read references inside a bracketed name", () => {
+    const t = parseTaskLine("- [ ] Plan #[Phase p1] @[Errands @home]")!;
+    expect(t.projectRef).toBe("Phase p1");
+    expect(t.labelRefs).toEqual(["Errands @home"]);
+    expect(t.priorityRef).toBeNull();
+    expect(t.text).toBe("Plan");
+  });
+
   it("ignores non-task lines", () => {
     expect(parseTaskLine("- just a bullet")).toBeNull();
     expect(parseTaskLine("[ ] no list marker")).toBeNull();
@@ -75,6 +92,12 @@ describe("serializeTask", () => {
     const t = parseTaskLine("- [ ] Call @[Waiting For] Bob #[Work] @PhoneCall 📅 2026-11-10")!;
     expect(serializeTask(t)).toBe("- [ ] Call Bob @[Waiting For] @PhoneCall #[Work] 📅 2026-11-10");
     expect(serializeTask({ ...t, labelRefs: ["done."] })).toBe("- [ ] Call Bob @[done.] #[Work] 📅 2026-11-10");
+  });
+
+  it("writes a priority straight after the text", () => {
+    const t = parseTaskLine("- [ ] Call p2 Bob @PhoneCall 📅 2026-11-10 %%td:abc%%")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob p2 @PhoneCall 📅 2026-11-10 %%td:abc%%");
+    expect(serializeTask({ ...t, priorityRef: null })).toBe("- [ ] Call Bob @PhoneCall 📅 2026-11-10 %%td:abc%%");
   });
 
   it("preserves custom checked statuses but unchecks to space", () => {
