@@ -1049,6 +1049,43 @@ describe("SyncEngine", () => {
     });
   });
 
+  describe("due date picker", () => {
+    beforeEach(async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+    });
+
+    it("sets a date, and the line's 📅 follows", async () => {
+      expect(await engine.changeDue("T2", { date: "2026-11-14" })).toBe(true);
+      expect(todoist.items.get("T2")!.due).toMatchObject({ date: "2026-11-14" });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-14 %%td:T2%%");
+      expect(state.remote.T2.due).toBe("2026-11-14");
+      const calls = todoist.calls.length;
+      await engine.pushFile("Note.md");
+      expect(todoist.calls.slice(calls).some((c) => c.length)).toBe(false); // nothing left to push
+    });
+
+    it("gives a task without a date one", async () => {
+      await engine.changeDue("T1", { date: "2026-11-09" });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip 📅 2026-11-09 %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+    });
+
+    it("sends words for Todoist to work out, including a repeat", async () => {
+      await engine.changeDue("T2", { words: "every month" });
+      expect(todoist.items.get("T2")!.due).toMatchObject({ string: "every month", is_recurring: true });
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 ${FakeTodoist.WORDS_DATE} %%td:T2%%`);
+      expect(state.remote.T2.recurring).toBe(true);
+    });
+
+    it("removes the date", async () => {
+      await engine.changeDue("T2", null);
+      expect(todoist.items.get("T2")!.due).toBeNull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%%");
+    });
+  });
+
   describe("label picker", () => {
     beforeEach(async () => {
       await engine.pull();

@@ -20,7 +20,7 @@ renders as
   - Edit the text in Obsidian and Todoist updates.
   - If both sides edited the same field, the most recent edit wins.
 - **The chip** shows project, due date (red when overdue, ↻ when recurring), priority and labels.
-  - Click it to open the task in Todoist. Click the project to move the task to another one, a label to change its labels, the priority to change it, or the `↳` subtask count to add missing subtasks.
+  - Click it to open the task in Todoist. Click the project to move the task to another one, a label to change its labels, the priority or due date to change it, or the `↳` subtask count to add missing subtasks.
   - To see or edit the raw marker, move the cursor onto it with the arrow keys, or click just beside the chip.
 - **Never deletes anything:**
   - Deleting a line in Obsidian only unlinks the task.
@@ -39,7 +39,7 @@ renders as
 | Chip | Meaning |
 |---|---|
 | `#Work`, `#Inbox` | Todoist project, in its Todoist colour. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
-| `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring |
+| `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring. Click it to change it; see [Changing a due date from the chip](#changing-a-due-date-from-the-chip). |
 | `P1` `P2` `P3` | Priority (P4 is not shown). Click it to change it; see [Setting a priority](#setting-a-priority). |
 | `@label`, or a tag icon and count | Todoist labels: the label itself when there's one, or how many when there are more (hover to see them). Click to change the task's labels; see [Labels](#labels). |
 | `↳ 2` | Open subtasks in Todoist, whether or not they're in a note (hidden when there are none). Only direct subtasks count, not theirs. Click it to add the ones that aren't in a note yet; see [Subtasks](#subtasks). |
@@ -106,6 +106,17 @@ When the task next syncs, its priority is set and the word is removed from the l
 - **A word of its own:** `mp3`, `#p1`, `p1st` and `(p1)` don't count. The last one on the line wins.
 - **In a title:** a separate `p1`–`p4` word is always read as a priority, so "Review p2 draft" becomes "Review draft" at p2. Write it another way, such as "Review P-2 draft", to keep it. This also applies to a title changed in Todoist: it's read on the next sync from this note.
 - **Timing:** like project and label references, it's applied once you move off the line, or straight away with **Sync now**.
+
+### Changing a due date from the chip
+
+Click the date on a task's chip to open the date picker, like Todoist's scheduler:
+
+- **Quick choices:** Today, Tomorrow, This weekend (Saturday; Next weekend at the weekend), Next week (Monday), and No date. Each shows the day it means.
+- **Anything else:** type it, such as `next friday`, `20 nov`, `in 3 days` or `every month`, and choose **Set to “…”**. Todoist works out the date, as its Quick Add does, so this takes more than the words a line understands.
+- **Applied straight away:** the task's date changes in Todoist, and the line's `📅` follows a moment later. It needs a connection.
+- **Repeating tasks:** picking a date or No date ends the repeat, unlike rescheduling in Todoist, and the picker says so. Type `every …` to set a new one.
+
+A task without a date has none on its chip to click: type the date on its line instead, as below.
 
 ### Setting a due date in words
 

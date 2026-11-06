@@ -9,6 +9,7 @@ import { emptyState, subtaskCount, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { ImportModal } from "./ui/importModal";
+import { DueModal } from "./ui/dueModal";
 import { PriorityModal } from "./ui/priorityModal";
 import { ProjectModal } from "./ui/projectModal";
 import { SubtaskChoiceModal } from "./ui/subtaskChoiceModal";
@@ -92,7 +93,7 @@ export default class InlineTasksPlugin extends Plugin {
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id) };
+    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id), due: (id: string) => this.changeDue(id) };
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, chipActions));
     this.registerEditorExtension(
       localEditTracker(
@@ -441,6 +442,31 @@ export default class InlineTasksPlugin extends Plugin {
     }).open();
   }
 
+  // ------------------------------------------------------------ due date picker
+
+  /** Pick a synced task's due date, from a click on its chip's date. */
+  private changeDue(id: string): void {
+    if (!this.engine.isLinked(id) || !this.settings.apiToken) return;
+    const meta = this.state.remote[id];
+    new DueModal(this.app, meta?.due ?? null, !!meta?.recurring, (pick) => {
+      void (async () => {
+        // Save open editors first, so the pull that writes the new date doesn't race unsaved text.
+        await this.saveViewsOf(this.state.tasks[id]?.path ?? "");
+        await this.guard(() => this.engine.changeDue(id, pick), true);
+        this.refresh();
+      })();
+    }).open();
+  }
+
+  /** Save every open editor of `path`. */
+  private async saveViewsOf(path: string): Promise<void> {
+    const views: MarkdownView[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof MarkdownView && leaf.view.file?.path === path) views.push(leaf.view);
+    });
+    for (const v of views) await v.save();
+  }
+
   // ------------------------------------------------------------ priority picker
 
   /** Pick a synced task's priority, from a click on its chip's priority. */
@@ -461,12 +487,7 @@ export default class InlineTasksPlugin extends Plugin {
   private async addRefAndPush(id: string, ref: string, what: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(this.state.tasks[id]?.path ?? "");
     if (!(file instanceof TFile)) return;
-    // Save open editors first, so the write below doesn't race their unsaved text.
-    const views: MarkdownView[] = [];
-    this.app.workspace.iterateAllLeaves((leaf) => {
-      if (leaf.view instanceof MarkdownView && leaf.view.file?.path === file.path) views.push(leaf.view);
-    });
-    for (const v of views) await v.save();
+    await this.saveViewsOf(file.path); // so the write below doesn't race their unsaved text
     this.origin.localEdit(file.path, Date.now()); // the user's own change, so pushed straight away
     let added = false;
     await this.app.vault.process(file, (content) => {

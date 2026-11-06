@@ -22,6 +22,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 - Label picker, like Todoist's label menu: every label with a tick box, the task's own labels ticked, and several can be ticked or unticked at once. Opened by clicking a label on a chip, or by typing `@` on a checkbox line. Unticking a label removes it from the task, which typed references can't do. Closing it without ticking or unticking anything cancels, and a label is only created by choosing **Create label**.
 - Clicking the priority on a chip opens a priority picker, like Todoist's. Priority 4 clears it.
+- Clicking the due date on a chip opens a date picker, like Todoist's scheduler: Today, Tomorrow, the weekend, next week or no date, or any date typed in words for Todoist to work out.
 
 ### Changed
 - The chip shows `#Inbox` for tasks in the Inbox, rather than no project.

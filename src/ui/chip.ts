@@ -53,7 +53,10 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
       const color = todoistColor(project.color); // the project's colour in Todoist
       if (color) s.style.color = color;
     }
-    if (meta.due) add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
+    if (meta.due) {
+      const s = add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
+      s.title = "Click to change its due date";
+    }
     const p = PRIORITY_CLASS[meta.priority];
     if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase()).title = "Click to change its priority";
     const labels = meta.labels ?? [];

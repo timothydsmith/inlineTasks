@@ -767,6 +767,29 @@ export class SyncEngine {
    * added or removed there since this device last pulled would otherwise be undone. A label that
    * doesn't exist is created. Returns false if the task isn't one this device can change.
    */
+  /**
+   * Set a synced task's due date, from the due date picker: a date (`YYYY-MM-DD`), words for
+   * Todoist to work out (`next friday`, `every month`), or null for none. Then pulls, so the line's
+   * `📅` follows the way any change made in Todoist does. Throws if Todoist can't read the words.
+   */
+  async changeDue(id: string, due: { date: string } | { words: string } | null): Promise<boolean> {
+    const sent = await this.exclusive(async () => {
+      if (!this.isLinked(id)) return false;
+      const value = due === null ? null : "words" in due ? dueFromWords(due.words) : { date: due.date };
+      const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, due: value } };
+      const res = await this.client.sync({ commands: [cmd] });
+      const status = res.sync_status?.[cmd.uuid];
+      if (status !== "ok") {
+        const why = status && typeof status === "object" ? status.error : "no answer";
+        throw new Error(due && "words" in due ? `Todoist couldn't set the date to “${due.words}”: ${why}` : `Todoist didn't change the date: ${why}`);
+      }
+      this.log(`set due on ${id}: ${due === null ? "none" : "words" in due ? due.words : due.date}`);
+      return true;
+    });
+    if (sent) await this.pull();
+    return sent;
+  }
+
   async changeLabels(id: string, add: string[], remove: string[]): Promise<boolean> {
     await this.pull();
     return this.exclusive(async () => {

@@ -8,6 +8,8 @@ export interface ChipActions {
   labels(id: string): void;
   /** The priority: pick another priority. */
   priority(id: string): void;
+  /** The due date: pick another date, or none. */
+  due(id: string): void;
 }
 
 /** The action for a click on `target` inside a chip, if it landed on a part that has one. */
@@ -17,5 +19,6 @@ export function chipAction(target: EventTarget | null, actions: ChipActions): ((
   if (el?.closest(".inline-tasks-project")) return (id) => actions.project(id);
   if (el?.closest(".inline-tasks-label")) return (id) => actions.labels(id);
   if (el?.closest(".inline-tasks-priority")) return (id) => actions.priority(id);
+  if (el?.closest(".inline-tasks-due")) return (id) => actions.due(id);
   return undefined;
 }
