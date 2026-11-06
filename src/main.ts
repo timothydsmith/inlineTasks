@@ -2,9 +2,10 @@ import { EditorView } from "@codemirror/view";
 import { Editor, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { SyncEngine, type VaultAdapter } from "./sync/engine";
-import { importLines } from "./sync/importTask";
+import { findLineByMarker, parseTaskLine } from "./parse/taskLine";
+import { blockEnd, importLines, missingSubtaskLines } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
-import { emptyState, type SyncState } from "./sync/state";
+import { emptyState, subtaskCount, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { ImportModal } from "./ui/importModal";
@@ -86,7 +87,8 @@ export default class InlineTasksPlugin extends Plugin {
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion));
+    const onSubtasks = (id: string) => void this.insertMissingSubtasks(id);
+    this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, onSubtasks));
     this.registerEditorExtension(
       localEditTracker(
         (path) => this.origin.localEdit(path, Date.now()),
@@ -97,7 +99,7 @@ export default class InlineTasksPlugin extends Plugin {
     for (const type of ["keydown", "pointerdown", "touchstart", "paste", "drop"] as const) {
       this.registerDomEvent(document, type, () => (this.lastInputAt = Date.now()), { capture: true });
     }
-    this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state));
+    this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, onSubtasks));
     this.registerSuggests();
 
     this.registerEvent(this.app.vault.on("modify", (f) => void this.onWrite(f)));
@@ -144,6 +146,16 @@ export default class InlineTasksPlugin extends Plugin {
         const file = ctx.file;
         if (!file || !this.settings.apiToken || !this.state.backfillDone || !this.engine.isFileEligible(file.path)) return false;
         if (!checking) void this.importTask(editor, file.path);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "insert-subtasks",
+      name: "Add missing subtasks from Todoist",
+      editorCheckCallback: (checking, editor) => {
+        const id = parseTaskLine(editor.getLine(editor.getCursor().line))?.todoistId;
+        if (!id || !this.settings.apiToken || !this.engine.isLinked(id)) return false;
+        if (!checking) void this.insertMissingSubtasks(id);
         return true;
       },
     });
@@ -280,10 +292,7 @@ export default class InlineTasksPlugin extends Plugin {
     // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
     const replace = current.trim() === "" || (!!list && list[2] === "");
     const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
-    const tab = config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
-    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, tab, withSubtasks);
+    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, this.indentUnit(), withSubtasks);
     // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
     await this.engine.registerImport(path, items.map((item, i) => ({ item, line: lines[i] })));
     const text = lines.join("\n");
@@ -295,6 +304,72 @@ export default class InlineTasksPlugin extends Plugin {
     const last = cursor.line + (replace ? 0 : 1) + lines.length - 1;
     editor.setCursor({ line: last, ch: editor.getLine(last).length });
     this.refresh();
+  }
+
+  /** One level of list indentation, as the editor is set to write it. */
+  private indentUnit(): string {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
+    return config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
+  }
+
+  /**
+   * Insert a synced task's open subtasks that aren't in any note yet beneath its line, after any
+   * subtasks already there. From the command, or a click on the chip's subtask count.
+   */
+  private async insertMissingSubtasks(id: string): Promise<void> {
+    const rec = this.state.tasks[id];
+    const file = rec && this.app.vault.getAbstractFileByPath(rec.path);
+    if (!rec || rec.orphaned || !(file instanceof TFile)) return;
+    const open = await this.guard(() => this.engine.openTasks(), true);
+    if (!open) return;
+    this.refresh(); // the read also refreshed the counts
+    const isLinked = (t: string) => this.engine.isLinked(t);
+    const editor = this.editorFor(file.path);
+    const read = async () => (editor ? editor.getValue() : await this.app.vault.read(file)).split("\n");
+
+    const lines = await read();
+    const idx = findLineByMarker(lines, id);
+    if (idx < 0) return;
+    const indent = /^\s*/.exec(lines[idx])![0];
+    const { lines: add, items } = missingSubtaskLines(id, open, isLinked, indent, this.indentUnit());
+    if (!add.length) {
+      new Notice(subtaskCount(this.state, id) ? "Its open subtasks are already in your notes" : "This task has no open subtasks");
+      return;
+    }
+    // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
+    await this.engine.registerImport(file.path, items.map((item, i) => ({ item, line: add[i] })));
+    // Found again, in case the note changed while the subtasks were being linked.
+    if (editor) {
+      const ls = await read();
+      const at = findLineByMarker(ls, id);
+      if (at >= 0) {
+        const end = blockEnd(ls, at);
+        editor.replaceRange(`\n${add.join("\n")}`, { line: end, ch: ls[end].length });
+      }
+    } else {
+      await this.app.vault.process(file, (c) => {
+        const ls = c.split("\n");
+        const at = findLineByMarker(ls, id);
+        if (at < 0) return c;
+        ls.splice(blockEnd(ls, at) + 1, 0, ...add);
+        return ls.join("\n");
+      });
+    }
+    new Notice(items.length === 1 ? "Added 1 subtask" : `Added ${items.length} subtasks`);
+    this.refresh();
+  }
+
+  /** The editor showing `path` in live preview or source mode, if any (the active one first). */
+  private editorFor(path: string): Editor | undefined {
+    const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (active?.file?.path === path && active.getMode() === "source") return active.editor;
+    let found: Editor | undefined;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const v = leaf.view;
+      if (!found && v instanceof MarkdownView && v.file?.path === path && v.getMode() === "source") found = v.editor;
+    });
+    return found;
   }
 
   // ------------------------------------------------------------ log

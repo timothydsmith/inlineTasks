@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { importLines } from "../src/sync/importTask";
-import { emptyState, type SyncState } from "../src/sync/state";
+import { blockEnd, importLines, missingSubtaskLines } from "../src/sync/importTask";
+import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
 
 /** In-memory Todoist that understands the handful of sync commands we send. */
@@ -589,6 +589,60 @@ describe("SyncEngine", () => {
     });
   });
 
+  describe("subtask counts", () => {
+    const item = (id: string, content: string, extra: Partial<TodoistItem> = {}) =>
+      todoist.items.set(id, {
+        id, content, description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null,
+        seq: ++todoist.seq, ...extra,
+      });
+
+    it("counts open subtasks from Todoist, linked to a note or not", async () => {
+      vault.files.set("Note.md", "- [ ] Plan trip");
+      await engine.pushFile("Note.md"); // T1
+      item("X1", "Book hotel", { parent_id: "T1" });
+      item("X2", "Book flights", { parent_id: "T1" });
+      item("X3", "Pick seats", { parent_id: "X2" }); // a subtask's subtask isn't counted
+      item("X4", "Done one", { parent_id: "T1", checked: true });
+      await engine.pull();
+      expect(subtaskCount(state, "T1")).toBe(2);
+      expect(subtaskCount(state, "X2")).toBe(1);
+
+      // Changes in Todoist reach it on the next (incremental) pull.
+      todoist.edit("X1", { checked: true });
+      todoist.edit("X4", { checked: false });
+      item("X5", "Pack", { parent_id: "T1" });
+      todoist.edit("X2", { parent_id: null });
+      await engine.pull();
+      expect(subtaskCount(state, "T1")).toBe(2); // X4, X5
+    });
+
+    it("updates the count straight away for changes sent from the note", async () => {
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Plan trip\n\t- [ ] Book hotel\n\t- [ ] Book flights");
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(2);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [ ] Book hotel", "- [x] Book hotel"));
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(1);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("\t- [ ] Book flights", "- [ ] Book flights"));
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(0);
+      vault.files.set("Note.md", vault.files.get("Note.md")!.replace("- [x] Book hotel", "- [ ] Book hotel"));
+      await engine.pushFile("Note.md");
+      expect(subtaskCount(state, "T1")).toBe(1);
+    });
+
+    it("fills in counts once for state saved before they were tracked", async () => {
+      item("X1", "Book hotel", { parent_id: "T9" });
+      await engine.pull();
+      delete (state as Partial<SyncState>).subtasks;
+      delete state.subtasksSynced;
+      todoist.calls.length = 0;
+      await engine.pull();
+      expect(subtaskCount(state, "T9")).toBe(1);
+    });
+  });
+
   describe("importing from Todoist", () => {
     const add = (id: string, content: string, extra: Partial<TodoistItem> = {}) =>
       todoist.items.set(id, {
@@ -623,6 +677,26 @@ describe("SyncEngine", () => {
       const alone = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "", "\t", false);
       expect(alone.lines).toEqual(["- [ ] Plan trip today 📅 2030-02-01 %%td:A%%"]);
       expect(alone.items.map((i) => i.id)).toEqual(["A"]);
+    });
+
+    it("builds lines for a synced task's subtasks that aren't in a note yet", async () => {
+      add("A", "Plan trip");
+      add("B", "Book hotel", { parent_id: "A", child_order: 2 });
+      add("C", "Book flights", { parent_id: "A", child_order: 1 });
+      add("D", "Pick seats", { parent_id: "C", child_order: 1 });
+      add("E", "Pack", { parent_id: "A", child_order: 3 });
+      state.tasks["A"] = { path: "Note.md", base: { text: "Plan trip", checked: false, due: null } };
+      state.tasks["B"] = { path: "Note.md", base: { text: "Book hotel", checked: false, due: null } };
+      const open = await engine.openTasks();
+      const { lines, items } = missingSubtaskLines("A", open, (id) => engine.isLinked(id), "  ", "\t");
+      expect(lines).toEqual(["  \t- [ ] Book flights %%td:C%%", "  \t\t- [ ] Pick seats %%td:D%%", "  \t- [ ] Pack %%td:E%%"]);
+      expect(items.map((i) => i.id)).toEqual(["C", "D", "E"]);
+      expect(subtaskCount(state, "A")).toBe(3); // the read refreshed the counts
+    });
+
+    it("finds the end of the block nested under a line", () => {
+      const lines = ["- [ ] A", "\t- [ ] B", "", "\t\tnotes", "", "- [ ] C", "\t- [ ] D", "- [ ] E"];
+      expect([0, 1, 5, 6, 7].map((i) => blockEnd(lines, i))).toEqual([3, 3, 6, 6, 7]);
     });
 
     it("links imported lines, so they sync as existing tasks", async () => {

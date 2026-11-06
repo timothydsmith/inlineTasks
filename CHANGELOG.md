@@ -14,6 +14,8 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - **Import task from Todoist** command: search your open Todoist tasks and insert one at the cursor, optionally with its open subtasks indented beneath it. The lines are linked straight away and sync both ways.
 - **Import subtasks** setting: ask each time (the default), always import or never import a task's subtasks.
 - A new checkbox nested under another checkbox is created as its subtask in Todoist, in the parent's project. A new task and its new subtasks are created together.
+- The chip shows how many open subtasks a task has in Todoist, such as `↳ 2`, counting ones that aren't in a note.
+- **Add missing subtasks from Todoist** command, also run by clicking the `↳` count: adds a task's open subtasks that aren't in a note yet beneath it.
 - Indenting, outdenting or moving a synced line changes which task it's a subtask of in Todoist, or makes it a top-level task. Only changes made in the note are sent, so a move made in Todoist isn't undone.
 
 ### Fixed

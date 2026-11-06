@@ -216,7 +216,7 @@ export function findTasks(content: string): TaskLocation[] {
 }
 
 /** Width of a line's indentation, a tab counting as 4 columns. */
-function indentWidth(line: string): number {
+export function indentWidth(line: string): number {
   let w = 0;
   for (const c of /^\s*/.exec(line)![0]) w += c === "\t" ? 4 - (w % 4) : 1;
   return w;

@@ -53,6 +53,13 @@ export interface SyncState {
   labels: Record<string, LabelInfo>;
   /** True once a full sync has filled in `labels` (state saved before labels were tracked lacks them). */
   labelsSynced?: boolean;
+  /**
+   * Every open subtask in Todoist, linked to a note or not: subtask id → parent id. For the
+   * subtask count on the chip. Kept up to date by pulls.
+   */
+  subtasks: Record<string, string>;
+  /** True once a full sync has filled in `subtasks` (state saved before they were tracked lacks them). */
+  subtasksSynced?: boolean;
   /** True once the user has confirmed the initial backfill of existing checkboxes. */
   backfillDone: boolean;
 }
@@ -71,5 +78,12 @@ export interface LabelInfo {
 }
 
 export function emptyState(): SyncState {
-  return { syncToken: null, tasks: {}, pending: {}, remote: {}, projects: {}, pendingProjects: {}, labels: {}, backfillDone: false };
+  return { syncToken: null, tasks: {}, pending: {}, remote: {}, projects: {}, pendingProjects: {}, labels: {}, subtasks: {}, backfillDone: false };
+}
+
+/** How many open subtasks a task has in Todoist (direct ones, not theirs). */
+export function subtaskCount(state: SyncState, id: string): number {
+  let n = 0;
+  for (const parent of Object.values(state.subtasks ?? {})) if (parent === id) n++;
+  return n;
 }

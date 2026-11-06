@@ -42,6 +42,7 @@ renders as
 | `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring |
 | `P1` `P2` `P3` | Priority (P4 is not shown) |
 | `@label` | Todoist labels |
+| `↳ 2` | Open subtasks in Todoist, whether or not they're in a note (hidden when there are none). Only direct subtasks count, not theirs. Click it to add the ones that aren't in a note yet; see [Subtasks](#subtasks). |
 | grey icon | Task is completed |
 | *syncing…* | Create is in flight |
 | ~~deleted in Todoist~~ | Task was deleted in Todoist. Remove the marker to unlink it. |
@@ -139,6 +140,7 @@ A new checkbox nested under another checkbox is created as its subtask in Todois
 - **Indenting and moving:** indent a synced line under another task and it becomes that task's subtask, in its project. Outdent it to the top level and it becomes a top-level task in the project it's in. Move it under a different task and it moves there. Its own subtasks move with it, as their lines do.
 - **Only changes you make in the note:** a task is moved when its nesting in the note changes, not because the note and Todoist differ. A subtask you move in Todoist stays where you put it, even though its line is still nested in the note. An imported or pasted line is taken as it's placed.
 - **Waits when needed:** a completed task isn't moved; the change is sent if you untick it. A line moved under a task that's still being created is moved once that task exists.
+- **Subtasks added in Todoist:** they don't appear in the note on their own. To bring them in, click the `↳` count on the task's chip, or put the cursor on the task's line and run **Add missing subtasks from Todoist**. Its open subtasks that aren't in any note yet are added beneath it, after the subtasks already there, each with its own open subtasks. Subtasks already in a note, this one or another, are left where they are.
 
 ### Importing a task from Todoist
 
@@ -216,6 +218,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | **Sync now** | Pushes every pending change, including the line you're on, then pulls. |
 | **Sync current note** | Pushes the active note immediately. |
 | **Import task from Todoist** | Inserts an open Todoist task, with its subtasks, at the cursor. See [Importing a task](#importing-a-task-from-todoist). |
+| **Add missing subtasks from Todoist** | On a synced task's line: adds its open subtasks that aren't in a note yet beneath it. Same as clicking the `↳` count on its chip. |
 | **Review backfill of existing checkboxes** | Shows how many unsynced open checkboxes would be created, and creates them on confirm. |
 | **Save sync log to a note** | Writes this device's recent sync decisions to `Inline Tasks sync log (desktop).md` (or `android`, `ios`), so you can compare what each device did. |
 
@@ -239,7 +242,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used.
 - **Labels:** can be added from a note but not removed. If a label is added in Todoist after this device last pulled and before an `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short.
-- **Subtasks:** the note doesn't follow changes made in Todoist. A subtask added in Todoist to a task in a note doesn't appear in the note on its own, and a task moved in Todoist keeps its old place in the note. Lines synced before this version are taken as they're nested the first time each note syncs.
+- **Subtasks:** the note doesn't follow changes made in Todoist. A subtask added in Todoist to a task in a note appears only when you add it (see [Subtasks](#subtasks)), and a task moved in Todoist keeps its old place in the note. Lines synced before this version are taken as they're nested the first time each note syncs.
 - **Not yet supported:** Todoist query blocks.
 
 ## Development

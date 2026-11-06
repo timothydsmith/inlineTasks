@@ -1,5 +1,5 @@
 import { PENDING } from "../parse/taskLine";
-import type { SyncState } from "../sync/state";
+import { subtaskCount, type SyncState } from "../sync/state";
 import { taskUrl } from "../todoist/client";
 
 // Todoist priority 4 = p1 (urgent) … 1 = p4 (normal)
@@ -50,6 +50,12 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase());
     for (const l of meta.labels ?? []) add("inline-tasks-label", `@${l}`);
     if (meta.checked) chip.classList.add("is-done");
+  }
+  const subtasks = subtaskCount(state, markerId);
+  if (subtasks) {
+    add("inline-tasks-subtasks", `↳ ${subtasks}`);
+    const n = subtasks === 1 ? "1 open subtask" : `${subtasks} open subtasks`;
+    (chip.lastChild as HTMLElement).title = `${n}. Click to add any that aren't in a note yet.`;
   }
   chip.title = "Open in Todoist";
   return chip;

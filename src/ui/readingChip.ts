@@ -8,7 +8,7 @@ const MARKER_RE = /%%td:([A-Za-z0-9_-]+)%%/;
  * Reading view: Obsidian strips `%%comments%%` from rendered HTML, so map each task
  * `<li>` back to its source line and append a chip if that line carries a marker.
  */
-export function readingChipProcessor(getState: () => SyncState) {
+export function readingChipProcessor(getState: () => SyncState, onSubtasks: (id: string) => void) {
   return (el: HTMLElement, ctx: MarkdownPostProcessorContext) => {
     const items = el.querySelectorAll<HTMLElement>("li.task-list-item");
     if (!items.length) return;
@@ -20,7 +20,15 @@ export function readingChipProcessor(getState: () => SyncState) {
       if (!Number.isFinite(rel)) return;
       const m = MARKER_RE.exec(lines[info.lineStart + rel] ?? "");
       if (!m) return;
-      const chip = renderChip(m[1], getState());
+      const id = m[1];
+      const chip = renderChip(id, getState());
+      // The subtask count adds the missing subtasks to the note, rather than following the link.
+      chip.addEventListener("click", (e) => {
+        if (!(e.target as HTMLElement).closest(".inline-tasks-subtasks")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onSubtasks(id);
+      });
       // Insert after the item's own text, before any nested list.
       const nested = li.querySelector(":scope > ul, :scope > ol");
       li.insertBefore(chip, nested);

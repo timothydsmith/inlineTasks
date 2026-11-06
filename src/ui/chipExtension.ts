@@ -10,7 +10,12 @@ export const refreshChips = StateEffect.define<null>();
 const MARKER_RE = /\s*%%td:([A-Za-z0-9_-]+)%%/g;
 
 class ChipWidget extends WidgetType {
-  constructor(private markerId: string, private state: () => SyncState, private version: number) {
+  constructor(
+    private markerId: string,
+    private state: () => SyncState,
+    private version: number,
+    private onSubtasks: (id: string) => void,
+  ) {
     super();
   }
   eq(other: ChipWidget): boolean {
@@ -28,7 +33,9 @@ class ChipWidget extends WidgetType {
     chip.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (chip.href) window.open(chip.href, "_blank");
+      // The subtask count adds the missing subtasks to the note; the rest opens the task in Todoist.
+      if ((e.target as HTMLElement).closest(".inline-tasks-subtasks")) this.onSubtasks(this.markerId);
+      else if (chip.href) window.open(chip.href, "_blank");
     });
     return chip;
   }
@@ -39,7 +46,7 @@ class ChipWidget extends WidgetType {
 }
 
 /** Live-preview extension: replaces `%%td:ID%%` with a chip unless the cursor is inside it. */
-export function chipExtension(getState: () => SyncState, getVersion: () => number) {
+export function chipExtension(getState: () => SyncState, getVersion: () => number, onSubtasks: (id: string) => void) {
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
@@ -73,7 +80,7 @@ export function chipExtension(getState: () => SyncState, getVersion: () => numbe
             builder.add(
               start,
               end,
-              Decoration.replace({ widget: new ChipWidget(m[1], getState, version) }),
+              Decoration.replace({ widget: new ChipWidget(m[1], getState, version, onSubtasks) }),
             );
           }
         }

@@ -191,6 +191,9 @@ export class SyncEngine {
   openTasks(): Promise<TodoistItem[]> {
     return this.exclusive(async () => {
       const res = await this.client.sync({ syncToken: "*", resourceTypes: ["items"] });
+      // A full read of the items, so the subtask counts can be refreshed from it.
+      this.state.subtasks = {};
+      this.noteSubtasks(res.items ?? []);
       return (res.items ?? []).filter((i) => !i.is_deleted && !i.checked);
     });
   }
@@ -521,6 +524,9 @@ export class SyncEngine {
           onOk[cmd.uuid] = () => {
             r.parent = want;
             meta.parentId = want;
+            this.state.subtasks ??= {};
+            if (want) this.state.subtasks[id] = want;
+            else delete this.state.subtasks[id];
             const parentProject = want ? this.state.remote[want]?.projectId : undefined;
             if (parentProject) meta.projectId = parentProject; // a subtask is in its parent's project
           };
@@ -537,6 +543,10 @@ export class SyncEngine {
         commands.push(cmd);
         onOk[cmd.uuid] = () => {
           rec!.base = { ...rec!.base, ...pickFields(local, push) };
+          // A subtask ticked or unticked here: its parent's count changes now, not at the next pull.
+          this.state.subtasks ??= {};
+          if (cmd.type === "item_close") delete this.state.subtasks[id];
+          else if (cmd.type === "item_uncomplete" && meta?.parentId) this.state.subtasks[id] = meta.parentId;
         };
       }
     }
@@ -609,6 +619,7 @@ export class SyncEngine {
       if (!cmd || !rec) continue;
       const parent = cmd.args.parent_id as string | undefined;
       const parentId = parent ? (mapping[parent] ?? parent) : null;
+      if (parentId) (this.state.subtasks ??= {})[realId] = parentId; // its parent's chip counts it now
       // Its nesting in the note when created, so a later indent or outdent is seen as a change.
       const under = createdUnder.get(tmp);
       if (rec.parent === undefined) rec.parent = under ? (mapping[under] ?? under) : null;
@@ -717,7 +728,9 @@ export class SyncEngine {
     // Projects saved before archived/parent were tracked need one full sync to fill them in, and so
     // do tasks we have no details for, since an incremental sync only returns tasks that changed.
     const stale =
-      Object.values(this.state.projects).some((p) => p.parentId === undefined) || !this.state.labelsSynced;
+      Object.values(this.state.projects).some((p) => p.parentId === undefined) ||
+      !this.state.labelsSynced ||
+      !this.state.subtasksSynced;
     const missing = this.missingDetails();
     // Tried once per session: a completed or deleted task isn't returned, and mustn't force a full sync every time.
     for (const id of missing) this.fetchTried.add(id);
@@ -731,7 +744,10 @@ export class SyncEngine {
       this.state.projects = {};
       this.state.labels = {};
       this.state.labelsSynced = true;
+      this.state.subtasks = {};
+      this.state.subtasksSynced = true;
     }
+    this.noteSubtasks(res.items ?? []);
     for (const l of res.labels ?? []) {
       if (l.is_deleted) delete this.state.labels[l.id];
       else this.state.labels[l.id] = { name: l.name, order: l.item_order };
@@ -820,6 +836,15 @@ export class SyncEngine {
     if (commands.length) await this.client.sync({ commands });
     this.state.syncToken = res.sync_token;
     await this.save();
+  }
+
+  /** Record which of these items are open subtasks, and of what (see SyncState.subtasks). */
+  private noteSubtasks(items: TodoistItem[]): void {
+    this.state.subtasks ??= {};
+    for (const item of items) {
+      if (item.parent_id && !item.checked && !item.is_deleted) this.state.subtasks[item.id] = item.parent_id;
+      else delete this.state.subtasks[item.id];
+    }
   }
 
   /** Pure: three-way merge each pulled item against its line in `content`. */
