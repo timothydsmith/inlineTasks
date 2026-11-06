@@ -42,3 +42,5 @@
 .inline-tasks-suggest-create { color: var(--text-accent); }
 .inline-tasks-label-choice { display: flex; align-items: center; gap: 0.5em; }
 .inline-tasks-label-choice input[type="checkbox"] { pointer-events: none; margin: 0; }
+.inline-tasks-label-count { display: inline-flex; align-items: center; gap: 0.15em; }
+.inline-tasks-label-count svg { width: 1em; height: 1em; }

@@ -10,15 +10,13 @@ export interface LabelPick {
   add: string[];
   /** Labels unticked that were ticked at the start. */
   remove: string[];
-  /** What was left in the search box, if nothing was ticked or unticked; otherwise empty. */
-  query: string;
 }
 
 /**
  * Pick a task's labels, like Todoist's label menu: every label with a tick box, the task's own
  * labels ticked. Type to filter; Enter or a click ticks or unticks the highlighted label, and
- * offers to create one when nothing matches. The picker stays open until Esc or a click outside,
- * and the changes are applied then.
+ * offers to create one when nothing matches: only choosing that creates a label. The picker stays
+ * open until Esc or a click outside, and the changes are applied then.
  */
 export class LabelModal extends SuggestModal<Choice> {
   /** Ticked labels: key → name. */
@@ -113,7 +111,6 @@ export class LabelModal extends SuggestModal<Choice> {
     super.onClose();
     const add = [...this.ticked].filter(([k]) => !this.initial.has(k)).map(([, n]) => n);
     const remove = [...this.initial].filter(([k]) => !this.ticked.has(k)).map(([, n]) => n);
-    const query = add.length || remove.length ? "" : this.inputEl.value.trim();
-    this.onDone({ add, remove, query });
+    this.onDone({ add, remove });
   }
 }

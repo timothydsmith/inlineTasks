@@ -1,3 +1,4 @@
+import { setIcon } from "obsidian";
 import { PENDING } from "../parse/taskLine";
 import { subtaskCount, type SyncState } from "../sync/state";
 import { taskUrl } from "../todoist/client";
@@ -20,6 +21,7 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     s.className = cls;
     s.textContent = text;
     chip.appendChild(s);
+    return s;
   };
 
   if (markerId.startsWith(PENDING)) {
@@ -51,9 +53,15 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     if (meta.due) add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
     const p = PRIORITY_CLASS[meta.priority];
     if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase());
-    for (const l of meta.labels ?? []) {
-      add("inline-tasks-label", `@${l}`);
-      (chip.lastChild as HTMLElement).title = "Click to change its labels";
+    const labels = meta.labels ?? [];
+    if (labels.length === 1) {
+      add("inline-tasks-label", `@${labels[0]}`).title = "Click to change its labels";
+    } else if (labels.length > 1) {
+      // Two or more: a tag icon and how many, to keep the chip short. Hover lists them.
+      const s = add("inline-tasks-label inline-tasks-label-count", "");
+      setIcon(s.createSpan(), "tag");
+      s.createSpan({ text: String(labels.length) });
+      s.title = `${labels.map((l) => `@${l}`).join(" ")}. Click to change them.`;
     }
     if (meta.checked) chip.classList.add("is-done");
   }

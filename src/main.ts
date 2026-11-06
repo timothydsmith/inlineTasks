@@ -287,8 +287,9 @@ export default class InlineTasksPlugin extends Plugin {
   /**
    * `@` was typed on a checkbox line at `pos`: open the label picker. A synced task's labels are
    * changed in Todoist when it closes, and the `@` is removed. On a line not synced yet, the `@` is
-   * replaced by references to the labels picked, which sync applies when it creates the task. With
-   * nothing picked, what was typed in the search box is left after the `@`, as if typed there.
+   * replaced by references to the labels picked, which sync applies when it creates the task. Closed
+   * with nothing ticked or unticked, it cancels: the `@` is removed, and what was typed in the search
+   * box is dropped, so a label is only ever created by choosing **Create label**.
    */
   private labelsFromAt(view: EditorView, pos: number): void {
     const task = parseTaskLine(view.state.doc.lineAt(pos).text);
@@ -305,9 +306,9 @@ export default class InlineTasksPlugin extends Plugin {
         const line = doc.lineAt(pos);
         const at = pos - line.from;
         const drop = new Set(pick.remove.map(labelKey));
-        const next = !changed
-          ? { line: line.text.slice(0, at + 1) + pick.query + line.text.slice(at + 1), cursor: at + 1 + pick.query.length }
-          : id
+        // The `@` goes in any case: replaced by references on a line not synced yet, otherwise just removed.
+        const next =
+          !changed || id
             ? withPickedLabels(line.text, at, [], () => false)
             : withPickedLabels(line.text, at, pick.add, (n) => drop.has(labelKey(n)));
         view.dispatch({

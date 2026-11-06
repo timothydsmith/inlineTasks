@@ -41,7 +41,7 @@ renders as
 | `#Work`, `#Inbox` | Todoist project. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
 | `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring |
 | `P1` `P2` `P3` | Priority (P4 is not shown) |
-| `@label` | Todoist labels. Click one to change the task's labels; see [Labels](#labels). |
+| `@label`, or a tag icon and count | Todoist labels: the label itself when there's one, or how many when there are more (hover to see them). Click to change the task's labels; see [Labels](#labels). |
 | `↳ 2` | Open subtasks in Todoist, whether or not they're in a note (hidden when there are none). Only direct subtasks count, not theirs. Click it to add the ones that aren't in a note yet; see [Subtasks](#subtasks). |
 | grey icon | Task is completed |
 | *syncing…* | Create is in flight |
@@ -73,8 +73,8 @@ Type `@` on a checkbox line, as a word of its own, to open the label picker. It 
 - **Apply:** press Esc or click outside the picker when you're done.
   - **Synced task:** its labels change in Todoist straight away, including any you unticked, and the `@` is removed. The picker works from the task's labels as Todoist has them at that moment, so a label added in Todoist meanwhile isn't lost.
   - **Line not synced yet:** the `@` is replaced by references to the labels you ticked, applied when the task is created. Unticking a label removes its reference from the line.
-  - **Nothing ticked or unticked:** anything typed in the search box is left on the line after the `@`, as if you'd typed it there.
-- **Label doesn't exist:** keep typing the new name, and the picker offers **Create label “…”**.
+  - **Nothing ticked or unticked:** nothing changes. The `@` is removed and anything typed in the search box is dropped.
+- **Label doesn't exist:** keep typing the new name, and the picker offers **Create label “…”**. Only choosing that creates a label, and only if it's still ticked when the picker closes.
 
 You can also type label references by hand. Names with spaces or punctuation are bracketed:
 
