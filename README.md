@@ -20,7 +20,7 @@ renders as
   - Edit the text in Obsidian and Todoist updates.
   - If both sides edited the same field, the most recent edit wins.
 - **The chip** shows project, due date (red when overdue, ↻ when recurring), priority and labels.
-  - Click it to open the task in Todoist. Click the project to move the task to another one, a label to change its labels, or the `↳` subtask count to add missing subtasks.
+  - Click it to open the task in Todoist. Click the project to move the task to another one, a label to change its labels, the priority to change it, or the `↳` subtask count to add missing subtasks.
   - To see or edit the raw marker, move the cursor onto it with the arrow keys, or click just beside the chip.
 - **Never deletes anything:**
   - Deleting a line in Obsidian only unlinks the task.
@@ -40,7 +40,7 @@ renders as
 |---|---|
 | `#Work`, `#Inbox` | Todoist project. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
 | `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring |
-| `P1` `P2` `P3` | Priority (P4 is not shown) |
+| `P1` `P2` `P3` | Priority (P4 is not shown). Click it to change it; see [Setting a priority](#setting-a-priority). |
 | `@label`, or a tag icon and count | Todoist labels: the label itself when there's one, or how many when there are more (hover to see them). Click to change the task's labels; see [Labels](#labels). |
 | `↳ 2` | Open subtasks in Todoist, whether or not they're in a note (hidden when there are none). Only direct subtasks count, not theirs. Click it to add the ones that aren't in a note yet; see [Subtasks](#subtasks). |
 | grey icon | Task is completed |
@@ -102,6 +102,7 @@ Type `p1`, `p2`, `p3` or `p4` anywhere on a checkbox line, as in Todoist: `p1` i
 When the task next syncs, its priority is set and the word is removed from the line. The chip shows P1–P3 from then on, and follows any change made in Todoist.
 
 - **New or synced tasks:** a new task is created with that priority, and a synced task's priority is changed. `p4` clears it.
+- **From the chip:** click P1–P3 on a chip to pick another priority, or Priority 4 to clear it. Type a number to jump to it. It adds the word for you and syncs straight away. A task with no priority has none on its chip to click: type the word instead.
 - **A word of its own:** `mp3`, `#p1`, `p1st` and `(p1)` don't count. The last one on the line wins.
 - **In a title:** a separate `p1`–`p4` word is always read as a priority, so "Review p2 draft" becomes "Review draft" at p2. Write it another way, such as "Review P-2 draft", to keep it. This also applies to a title changed in Todoist: it's read on the next sync from this note.
 - **Timing:** like project and label references, it's applied once you move off the line, or straight away with **Sync now**.

@@ -262,9 +262,14 @@ export const PENDING = PENDING_PREFIX;
 
 /** The line with `#[name]` added just before its marker, where sync reads it as a project reference. */
 export function withProjectRef(line: string, name: string): string {
+  return withRef(line, `#[${name}]`);
+}
+
+/** The line with a reference (`#[Project]`, `p2`) added just before its marker, where sync reads it. */
+export function withRef(line: string, ref: string): string {
   const marker = /\s*%%td:[A-Za-z0-9_-]+%%/.exec(line);
   const at = marker ? marker.index : line.trimEnd().length;
-  return `${line.slice(0, at)} #[${name}]${line.slice(at)}`;
+  return `${line.slice(0, at)} ${ref}${line.slice(at)}`;
 }
 
 /**

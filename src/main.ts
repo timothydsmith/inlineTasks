@@ -2,13 +2,14 @@ import { EditorView } from "@codemirror/view";
 import { Editor, editorInfoField, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
-import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withProjectRef } from "./parse/taskLine";
+import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withRef } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { emptyState, subtaskCount, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
 import { ImportModal } from "./ui/importModal";
+import { PriorityModal } from "./ui/priorityModal";
 import { ProjectModal } from "./ui/projectModal";
 import { SubtaskChoiceModal } from "./ui/subtaskChoiceModal";
 import { chipExtension, refreshChips } from "./ui/chipExtension";
@@ -91,7 +92,7 @@ export default class InlineTasksPlugin extends Plugin {
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id) };
+    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id) };
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, chipActions));
     this.registerEditorExtension(
       localEditTracker(
@@ -436,16 +437,28 @@ export default class InlineTasksPlugin extends Plugin {
         new Notice(`More than one project is called “${name}”, so it can't be picked from here. Use Todoist instead.`);
         return;
       }
-      void this.guard(() => this.fileInProject(id, name), true);
+      void this.guard(() => this.addRefAndPush(id, `#[${name}]`, `moving ${id} to project "${name}"`), true);
+    }).open();
+  }
+
+  // ------------------------------------------------------------ priority picker
+
+  /** Pick a synced task's priority, from a click on its chip's priority. */
+  private changePriority(id: string): void {
+    if (!this.engine.isLinked(id) || !this.settings.apiToken) return;
+    const current = 5 - (this.state.remote[id]?.priority ?? 1); // Todoist's 4 is p1, and 1 is p4
+    new PriorityModal(this.app, current, (p) => {
+      void this.guard(() => this.addRefAndPush(id, `p${p}`, `setting ${id} to p${p}`), true);
     }).open();
   }
 
   /**
-   * Move a task to a project by adding `#[Name]` to its line and pushing the note straight away, so it
-   * goes the same way as a typed reference: a nested line moves out of its block, a missing project
-   * is created, and if Todoist can't be reached the reference stays on the line until it can.
+   * Add a reference (`#[Project]`, `p2`) to a task's line and push the note straight away, so a
+   * change picked on the chip goes the same way as a typed reference: a nested line filed in another
+   * project moves out of its block, a missing project is created, and if Todoist can't be reached
+   * the reference stays on the line until it can.
    */
-  private async fileInProject(id: string, name: string): Promise<void> {
+  private async addRefAndPush(id: string, ref: string, what: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(this.state.tasks[id]?.path ?? "");
     if (!(file instanceof TFile)) return;
     // Save open editors first, so the write below doesn't race their unsaved text.
@@ -460,12 +473,12 @@ export default class InlineTasksPlugin extends Plugin {
       const lines = content.split("\n");
       const at = findLineByMarker(lines, id);
       if (at < 0) return content;
-      lines[at] = withProjectRef(lines[at], name);
+      lines[at] = withRef(lines[at], ref);
       added = true;
       return lines.join("\n");
     });
     if (!added) return;
-    this.log(`${file.path}: moving ${id} to project "${name}" (chip)`);
+    this.log(`${file.path}: ${what} (chip)`);
     await this.engine.pushFile(file.path);
     this.refresh();
   }

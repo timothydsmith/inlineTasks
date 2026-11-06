@@ -52,7 +52,7 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     }
     if (meta.due) add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
     const p = PRIORITY_CLASS[meta.priority];
-    if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase());
+    if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase()).title = "Click to change its priority";
     const labels = meta.labels ?? [];
     if (labels.length === 1) {
       add("inline-tasks-label", `@${labels[0]}`).title = "Click to change its labels";

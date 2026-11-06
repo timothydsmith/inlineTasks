@@ -27,8 +27,8 @@
   background: #e44332; /* Todoist red */
 }
 .inline-tasks-due.is-overdue { color: var(--text-error); }
-.inline-tasks-subtasks, .inline-tasks-project, .inline-tasks-label { border-radius: 4px; padding: 0 0.2em; }
-.inline-tasks-subtasks:hover, .inline-tasks-project:hover, .inline-tasks-label:hover { background: var(--background-modifier-active-hover); color: var(--text-accent); }
+.inline-tasks-subtasks, .inline-tasks-project, .inline-tasks-label, .inline-tasks-priority { border-radius: 4px; padding: 0 0.2em; }
+.inline-tasks-subtasks:hover, .inline-tasks-project:hover, .inline-tasks-label:hover, .inline-tasks-priority:hover { background: var(--background-modifier-active-hover); color: var(--text-accent); }
 .inline-tasks-priority.p1 { color: #d1453b; font-weight: 600; }
 .inline-tasks-priority.p2 { color: #eb8909; font-weight: 600; }
 .inline-tasks-priority.p3 { color: #246fe0; font-weight: 600; }
@@ -44,3 +44,11 @@
 .inline-tasks-label-choice input[type="checkbox"] { pointer-events: none; margin: 0; }
 .inline-tasks-label-count { display: inline-flex; align-items: center; gap: 0.15em; }
 .inline-tasks-label-count svg { width: 1em; height: 1em; }
+.inline-tasks-priority-choice { display: flex; align-items: center; gap: 0.5em; }
+.inline-tasks-priority-choice .inline-tasks-suggest-path { margin-left: auto; }
+.inline-tasks-priority-flag { display: inline-flex; }
+.inline-tasks-priority-flag svg { width: 1em; height: 1em; }
+.inline-tasks-priority-flag.p1 { color: #d1453b; }
+.inline-tasks-priority-flag.p2 { color: #eb8909; }
+.inline-tasks-priority-flag.p3 { color: #246fe0; }
+.inline-tasks-priority-flag.p4 { color: var(--text-faint); }

@@ -1,7 +1,7 @@
 import { generateKeyBetween } from "fractional-indexing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { blockEnd, withProjectRef } from "../src/parse/taskLine";
+import { blockEnd, withProjectRef, withRef } from "../src/parse/taskLine";
 import { importLines, withMissingSubtasks } from "../src/sync/importTask";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
@@ -451,6 +451,26 @@ describe("SyncEngine", () => {
       expect(todoist.items.get("T1")!.priority).toBe(1);
       expect(todoist.items.get("T1")!.content).toBe("Call Bob");
       expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%%");
+    });
+
+    it("sets the priority picked on the chip on a dated subtask, and p4 clears it", async () => {
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] Book train 📅 2026-11-10");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      const pick = (p: number) => {
+        const lines = vault.files.get("Note.md")!.split("\n");
+        lines[1] = withRef(lines[1], `p${p}`);
+        vault.files.set("Note.md", lines.join("\n"));
+      };
+      pick(1);
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")).toMatchObject({ priority: 4, content: "Book train", parent_id: "T1" });
+      expect(state.remote.T2.priority).toBe(4); // chip updates before the next pull
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
+      pick(4);
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T2")!.priority).toBe(1);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train 📅 2026-11-10 %%td:T2%%");
     });
 
     it("leaves it on the line while the line is being edited", async () => {
