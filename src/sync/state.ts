@@ -10,6 +10,13 @@ export interface TaskRecord {
    * moving it in Todoist isn't undone by a note whose nesting hasn't changed.
    */
   parent?: string | null;
+  /**
+   * The order of this task's synced subtasks when last synced: as they were in the note, and as
+   * they were in Todoist. Whichever side has changed since is copied to the other (the note wins
+   * if both have).
+   */
+  kidsNote?: string[];
+  kidsTodoist?: string[];
   orphaned?: boolean;
 }
 
@@ -24,6 +31,9 @@ export interface RemoteMeta {
   labels?: string[];
   /** Parent task in Todoist, or null for a top-level task. Undefined if not known yet. */
   parentId?: string | null;
+  /** Its place among its siblings in Todoist (see order.ts). Undefined if not known yet. */
+  orderKey?: string | null;
+  childOrder?: number;
 }
 
 export interface PendingCreate {

@@ -237,6 +237,21 @@ export function parentLine(lines: string[], line: number, taskLines: Set<number>
   return null;
 }
 
+/**
+ * The last line of the block nested under line `idx` (its subtasks, their subtasks, and any
+ * indented text), or `idx` itself if nothing is nested under it. Trailing blank lines aren't part of it.
+ */
+export function blockEnd(lines: string[], idx: number): number {
+  const width = indentWidth(lines[idx]);
+  let last = idx;
+  for (let j = idx + 1; j < lines.length; j++) {
+    if (!lines[j].trim()) continue;
+    if (indentWidth(lines[j]) <= width) break;
+    last = j;
+  }
+  return last;
+}
+
 /** Find the line index that carries a given marker id (real or pending). */
 export function findLineByMarker(lines: string[], markerId: string): number {
   const needle = `%%td:${markerId}%%`;

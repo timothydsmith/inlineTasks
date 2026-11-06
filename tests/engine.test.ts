@@ -1,6 +1,8 @@
+import { generateKeyBetween } from "fractional-indexing";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { blockEnd, importLines, missingSubtaskLines } from "../src/sync/importTask";
+import { blockEnd } from "../src/parse/taskLine";
+import { importLines, withMissingSubtasks } from "../src/sync/importTask";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
 
@@ -29,6 +31,20 @@ class FakeTodoist {
     return d as { date: string };
   }
 
+  /** An order key after every existing subtask of `parent`, as Todoist gives a task added or moved there. */
+  private lastKey(parent: string | null | undefined): string {
+    const keys = [...this.items.values()].filter((i) => (i.parent_id ?? null) === (parent ?? null) && i.order_key).map((i) => i.order_key!);
+    return generateKeyBetween(keys.sort().at(-1) ?? null, null);
+  }
+
+  /** Open subtasks of `parent`, in Todoist's order. */
+  kids(parent: string): string[] {
+    return [...this.items.values()]
+      .filter((i) => i.parent_id === parent && !i.checked)
+      .sort((a, b) => (a.order_key! < b.order_key! ? -1 : 1))
+      .map((i) => i.id);
+  }
+
   http = async (req: HttpRequest) => {
     const form = new URLSearchParams(req.body);
     const commands: Command[] = form.has("commands") ? JSON.parse(form.get("commands")!) : [];
@@ -55,6 +71,7 @@ class FakeTodoist {
         this.items.set(id, {
           id, content: a.content, description: a.description, project_id: a.project_id ?? parent?.project_id ?? "inbox",
           ...(parent ? { parent_id: parent.id } : {}),
+          order_key: this.lastKey(parent?.id),
           checked: false, is_deleted: false, priority: a.priority ?? 1, due: this.due(a.due), labels: a.labels ?? [], seq: ++this.seq,
         });
         if (c.temp_id) temp_id_mapping[c.temp_id] = id;
@@ -65,12 +82,15 @@ class FakeTodoist {
           if ("due" in a) it.due = this.due(a.due);
           if ("labels" in a) it.labels = a.labels;
           if ("priority" in a) it.priority = a.priority;
+          if ("order_key" in a) it.order_key = a.order_key;
         } else if (c.type === "item_close") it.checked = true;
         else if (c.type === "item_uncomplete") it.checked = false;
         else if (c.type === "item_move" && a.parent_id) {
+          it.order_key = this.lastKey(a.parent_id);
           it.parent_id = a.parent_id;
           it.project_id = this.items.get(a.parent_id)!.project_id;
         } else if (c.type === "item_move") {
+          it.order_key = this.lastKey(null);
           it.project_id = a.project_id;
           it.parent_id = null;
         }
@@ -589,6 +609,84 @@ describe("SyncEngine", () => {
     });
   });
 
+  describe("subtask order", () => {
+    const keyOf = (id: string) => todoist.items.get(id)!.order_key!;
+    const reorders = () => todoist.calls.flat().filter((c) => c.type === "item_update" && "order_key" in c.args);
+    const note = () => vault.files.get("Note.md")!;
+
+    beforeEach(async () => {
+      await engine.pull();
+      // T1 Trip; T2 A, T3 B (with T4 B1 under it), T5 C
+      vault.files.set("Note.md", "- [ ] Trip\n\t- [ ] A\n\t- [ ] B\n\t\t- [ ] B1\n\t- [ ] C");
+      await engine.pushFile("Note.md");
+      expect(todoist.kids("T1")).toEqual(["T2", "T3", "T5"]);
+      expect(reorders()).toEqual([]);
+    });
+
+    it("sends a reorder made in the note, moving only the task that moved", async () => {
+      vault.files.set("Note.md", "- [ ] Trip %%td:T1%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.kids("T1")).toEqual(["T5", "T2", "T3"]);
+      expect(reorders().map((c) => c.args.id)).toEqual(["T5"]);
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(reorders().length).toBe(1); // settled
+      expect(note()).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%");
+    });
+
+    it("rearranges the lines for a reorder made in Todoist, with what's nested under them", async () => {
+      todoist.edit("T5", { order_key: generateKeyBetween(null, keyOf("T2")) });
+      await engine.pull();
+      expect(note()).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%");
+      await engine.pushFile("Note.md");
+      expect(reorders()).toEqual([]); // nothing sent back
+    });
+
+    it("lets the note win when both sides were reordered", async () => {
+      todoist.edit("T5", { order_key: generateKeyBetween(null, keyOf("T2")) }); // C first, in Todoist
+      vault.files.set("Note.md", note().replace("\t- [ ] A %%td:T2%%\n", "").replace("\t- [ ] C %%td:T5%%", "\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%"));
+      await engine.pushFile("Note.md"); // B, C, A in the note
+      expect(todoist.kids("T1")).toEqual(["T3", "T5", "T2"]);
+      await engine.pull();
+      expect(note()).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] B %%td:T3%%\n\t\t- [ ] B1 %%td:T4%%\n\t- [ ] C %%td:T5%%\n\t- [ ] A %%td:T2%%");
+    });
+
+    it("leaves subtasks that aren't in the note in their places", async () => {
+      todoist.items.set("X", {
+        id: "X", content: "Not in note", description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null,
+        parent_id: "T1", order_key: generateKeyBetween(keyOf("T2"), keyOf("T3")), seq: ++todoist.seq,
+      });
+      await engine.pull();
+      vault.files.set("Note.md", note().replace("\t- [ ] A %%td:T2%%\n", "").replace("\t\t- [ ] B1 %%td:T4%%", "\t\t- [ ] B1 %%td:T4%%\n\t- [ ] A %%td:T2%%"));
+      await engine.pushFile("Note.md"); // B, A, C in the note
+      const kids = todoist.kids("T1");
+      expect(kids.filter((k) => k !== "X")).toEqual(["T3", "T2", "T5"]);
+      expect(reorders().length).toBe(1); // one task moved
+      // X keeps its place relative to the tasks that didn't move (A and C here).
+      expect(kids.indexOf("T2") < kids.indexOf("X") && kids.indexOf("X") < kids.indexOf("T5")).toBe(true);
+    });
+
+    it("puts a subtask typed between others in its place", async () => {
+      vault.files.set("Note.md", note().replace("\t- [ ] B %%td:T3%%", "\t- [ ] A2\n\t- [ ] B %%td:T3%%"));
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T6")!.content).toBe("A2");
+      expect(todoist.kids("T1")).toEqual(["T2", "T6", "T3", "T5"]);
+    });
+
+    it("doesn't rearrange lines with other text among them", async () => {
+      vault.files.set("Note.md", note().replace("\t- [ ] C", "\tA note about C\n\t- [ ] C"));
+      await engine.pushFile("Note.md");
+      todoist.edit("T5", { order_key: generateKeyBetween(null, keyOf("T2")) });
+      const before = note();
+      await engine.pull();
+      expect(note()).toBe(before);
+      await engine.pull();
+      await engine.pushFile("Note.md");
+      expect(note()).toBe(before);
+      expect(reorders()).toEqual([]); // nor is the note's order forced on Todoist
+    });
+  });
+
   describe("subtask counts", () => {
     const item = (id: string, content: string, extra: Partial<TodoistItem> = {}) =>
       todoist.items.set(id, {
@@ -679,19 +777,31 @@ describe("SyncEngine", () => {
       expect(alone.items.map((i) => i.id)).toEqual(["A"]);
     });
 
-    it("builds lines for a synced task's subtasks that aren't in a note yet", async () => {
+    it("adds a synced task's missing subtasks where Todoist has them", async () => {
       add("A", "Plan trip");
-      add("B", "Book hotel", { parent_id: "A", child_order: 2 });
-      add("C", "Book flights", { parent_id: "A", child_order: 1 });
-      add("D", "Pick seats", { parent_id: "C", child_order: 1 });
-      add("E", "Pack", { parent_id: "A", child_order: 3 });
-      state.tasks["A"] = { path: "Note.md", base: { text: "Plan trip", checked: false, due: null } };
-      state.tasks["B"] = { path: "Note.md", base: { text: "Book hotel", checked: false, due: null } };
+      add("B", "Book hotel", { parent_id: "A", order_key: "a2" });
+      add("C", "Book flights", { parent_id: "A", order_key: "a1" });
+      add("D", "Pick seats", { parent_id: "C", order_key: "a0" });
+      add("E", "Pack", { parent_id: "A", order_key: "a3" });
+      add("F", "Visa", { parent_id: "A", order_key: "a0" });
+      for (const id of ["A", "B"]) state.tasks[id] = { path: "Note.md", base: { text: "", checked: false, due: null } };
       const open = await engine.openTasks();
-      const { lines, items } = missingSubtaskLines("A", open, (id) => engine.isLinked(id), "  ", "\t");
-      expect(lines).toEqual(["  \t- [ ] Book flights %%td:C%%", "  \t\t- [ ] Pick seats %%td:D%%", "  \t- [ ] Pack %%td:E%%"]);
-      expect(items.map((i) => i.id)).toEqual(["C", "D", "E"]);
-      expect(subtaskCount(state, "A")).toBe(3); // the read refreshed the counts
+      const note = ["# Trip", "  - [ ] Plan trip %%td:A%%", "  \t- [ ] Book hotel %%td:B%%", "  \t\tnotes on hotels", "- [ ] Other"];
+      const { lines, added } = withMissingSubtasks(note, 1, "A", open, (id) => engine.isLinked(id), "\t");
+      expect(lines).toEqual([
+        "# Trip",
+        "  - [ ] Plan trip %%td:A%%",
+        "  \t- [ ] Visa %%td:F%%", // first in Todoist: before Book hotel
+        "  \t- [ ] Book flights %%td:C%%",
+        "  \t\t- [ ] Pick seats %%td:D%%",
+        "  \t- [ ] Book hotel %%td:B%%",
+        "  \t\tnotes on hotels",
+        "  \t- [ ] Pack %%td:E%%", // after Book hotel and what's nested under it
+        "- [ ] Other",
+      ]);
+      expect(added.map((a) => a.item.id)).toEqual(["F", "C", "D", "E"]);
+      expect(added[1].line).toBe("  \t- [ ] Book flights %%td:C%%");
+      expect(subtaskCount(state, "A")).toBe(4); // the read refreshed the counts
     });
 
     it("finds the end of the block nested under a line", () => {

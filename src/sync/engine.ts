@@ -11,6 +11,7 @@ import {
 } from "../parse/taskLine";
 import { dueDate, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
 import { isEmpty, merge } from "./merge";
+import { compareSiblings, inOrderOf, reorderBlocks, reorderKeys, sameOrder, type Sibling } from "./order";
 import type { SyncState } from "./state";
 
 /** The slice of Obsidian the engine needs. Implemented in main.ts; faked in tests. */
@@ -57,6 +58,8 @@ export class SyncEngine {
   private fetchTried = new Set<string>();
   /** A push sent something only a pull can complete (a due date in words). See takePullRequest. */
   private wantPull = false;
+  /** Task ids whose place among their siblings we've already read afresh this session (see syncOrder). */
+  private orderTried = new Set<string>();
 
   constructor(
     private client: TodoistClient,
@@ -217,6 +220,8 @@ export class SyncEngine {
           checked: false,
           labels: item.labels,
           parentId: item.parent_id ?? null,
+          orderKey: item.order_key ?? null,
+          childOrder: item.child_order,
         };
       }
       this.log(`${path}: imported ${imported.length} task(s) from Todoist`);
@@ -560,6 +565,7 @@ export class SyncEngine {
 
     if (!commands.length) {
       await this.stripRefs(path, applied);
+      await this.syncOrder(path);
       await this.save();
       return { deferred };
     }
@@ -632,6 +638,7 @@ export class SyncEngine {
       this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels, parentId };
     }
     await this.stripRefs(path, applied);
+    await this.syncOrder(path);
 
     await this.save();
     return { deferred };
@@ -799,6 +806,8 @@ export class SyncEngine {
         checked: item.checked,
         labels: item.labels,
         parentId: item.parent_id ?? null,
+        orderKey: item.order_key ?? null,
+        childOrder: item.child_order,
       };
       byPath.set(rec.path, [...(byPath.get(rec.path) ?? []), item]);
     }
@@ -834,8 +843,148 @@ export class SyncEngine {
     }
 
     if (commands.length) await this.client.sync({ commands });
+    // Subtasks reordered in Todoist (or here, and not yet sent) in the notes this pull touched.
+    for (const path of byPath.keys()) await this.syncOrder(path);
     this.state.syncToken = res.sync_token;
     await this.save();
+  }
+
+  // ---------------------------------------------------------------- subtask order
+
+  /**
+   * Keep the order of each synced task's synced subtasks the same in the note and in Todoist
+   * (see TaskRecord.kidsNote). Called after a push, and by a pull for the notes it touched.
+   */
+  private async syncOrder(path: string): Promise<void> {
+    const lines = (await this.vault.read(path)).split("\n");
+    const tasks = findTasks(lines.join("\n"));
+    const byLine = new Map(tasks.map((t) => [t.line, t.task]));
+    const taskLines = new Set(byLine.keys());
+    const live = (id: string | null | undefined): id is string => !!id && this.isLinked(id);
+
+    // Each synced task's open, synced subtasks in this note, in note order. Only those Todoist
+    // agrees are its subtasks: one just indented under it is moved first, then ordered.
+    const groups = new Map<string, string[]>();
+    for (const { line, task } of tasks) {
+      const id = task.todoistId;
+      if (!live(id) || task.checked || this.state.remote[id]?.checked) continue;
+      const p = parentLine(lines, line, taskLines);
+      const parent = p === null ? null : byLine.get(p)?.todoistId;
+      if (!live(parent) || this.state.remote[id]?.parentId !== parent) continue;
+      groups.set(parent, [...(groups.get(parent) ?? []), id]);
+    }
+    if (!groups.size) return;
+
+    // Tasks whose place in Todoist isn't known (created here, or saved by an older version): read it.
+    let fresh: TodoistItem[] | undefined;
+    const read = async () => (fresh ??= await this.readItems());
+    const unknown = [...groups.values()].flat().filter((id) => this.state.remote[id]?.orderKey === undefined);
+    if (unknown.some((id) => !this.orderTried.has(id))) {
+      for (const id of unknown) this.orderTried.add(id);
+      await read();
+    }
+    const sibling = (id: string): Sibling => ({ id, key: this.state.remote[id]?.orderKey, childOrder: this.state.remote[id]?.childOrder });
+    const known = (id: string) => this.state.remote[id]?.orderKey !== undefined;
+
+    const commands: Command[] = [];
+    const onOk: Record<string, () => void> = {};
+    const reorder = new Map<string, string[]>();
+    for (const [parent, local] of groups) {
+      const rec = this.state.tasks[parent];
+      const remote = local.every(known) ? [...local].sort((a, b) => compareSiblings(sibling(a), sibling(b))) : null;
+      const settle = (order: string[], todoist: string[] | null = order) => {
+        rec.kidsNote = order;
+        rec.kidsTodoist = todoist ?? undefined;
+      };
+      if (!rec.kidsNote) {
+        settle(local, remote); // first seen: nothing to compare with yet
+        continue;
+      }
+      const changed = (now: string[], was: string[] | undefined) =>
+        !was || now.some((id) => !was.includes(id)) || !sameOrder(inOrderOf(now, was), inOrderOf(was, now));
+      const noteChanged = changed(local, rec.kidsNote);
+      const todoistChanged = !!remote && !!rec.kidsTodoist && !sameOrder(inOrderOf(remote, rec.kidsTodoist), inOrderOf(rec.kidsTodoist, remote));
+      if (remote && sameOrder(local, remote)) {
+        settle(local);
+      } else if (noteChanged) {
+        // Reordered in the note (or a subtask joined here): give the moved tasks new places.
+        const siblings = (await read())
+          .filter((i) => i.parent_id === parent && !i.checked && !i.is_deleted)
+          .map((i) => ({ id: i.id, key: i.order_key, childOrder: i.child_order }))
+          .sort(compareSiblings);
+        const keys = reorderKeys(siblings, local);
+        if (!keys) {
+          this.log(`${path}: can't reorder the subtasks of ${parent} in Todoist (no order keys)`);
+          settle(local, remote);
+          continue;
+        }
+        for (const [id, key] of keys) {
+          const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, order_key: key } };
+          commands.push(cmd);
+          onOk[cmd.uuid] = () => {
+            const meta = this.state.remote[id];
+            if (meta) meta.orderKey = key;
+          };
+        }
+        settle(local); // if a command fails, the next pull shows Todoist's order as changed and puts it back
+      } else if (todoistChanged && remote) {
+        reorder.set(parent, remote); // reordered in Todoist: rearrange the lines
+      } else {
+        settle(local, remote);
+      }
+    }
+
+    if (commands.length) {
+      const res = await this.client.sync({ commands });
+      for (const cmd of commands) {
+        const status = res.sync_status?.[cmd.uuid];
+        if (status === "ok") onOk[cmd.uuid]?.();
+        else if (status) this.log(`Todoist rejected ${cmd.type} ${JSON.stringify(cmd.args)}: ${status.error}`);
+      }
+      this.log(`${path}: reordered ${commands.length} subtask(s) in Todoist`);
+    }
+    if (reorder.size) {
+      const idOf = (l: string) => parseTaskLine(l)?.todoistId ?? null;
+      const done = new Set<string>();
+      await this.vault.process(path, (content) => {
+        let ls = content.split("\n");
+        for (const [parent, order] of reorder) {
+          const at = findLineByMarker(ls, parent);
+          const next = at >= 0 ? reorderBlocks(ls, at, order, idOf) : null;
+          if (next) {
+            ls = next;
+            done.add(parent);
+          }
+        }
+        return done.size ? ls.join("\n") : content;
+      });
+      for (const [parent, order] of reorder) {
+        const rec = this.state.tasks[parent];
+        if (done.has(parent)) {
+          rec.kidsNote = order;
+          rec.kidsTodoist = order;
+        } else {
+          // Something other than subtasks sits among them, so there's no telling where it goes.
+          this.log(`${path}: subtasks of ${parent} were reordered in Todoist; left as they are in the note`);
+          rec.kidsTodoist = order;
+        }
+      }
+      if (done.size) this.log(`${path}: reordered the subtasks of ${done.size} task(s) to match Todoist`);
+    }
+  }
+
+  /** All open items, read afresh: fills in each linked task's place among its siblings. */
+  private async readItems(): Promise<TodoistItem[]> {
+    const res = await this.client.sync({ syncToken: "*", resourceTypes: ["items"] });
+    const items = (res.items ?? []).filter((i) => !i.is_deleted && !i.checked);
+    for (const i of items) {
+      const meta = this.state.remote[i.id];
+      if (!meta) continue;
+      meta.orderKey = i.order_key ?? null;
+      meta.childOrder = i.child_order;
+      meta.parentId = i.parent_id ?? null;
+    }
+    return items;
   }
 
   /** Record which of these items are open subtasks, and of what (see SyncState.subtasks). */

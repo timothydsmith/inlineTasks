@@ -2,8 +2,8 @@ import { EditorView } from "@codemirror/view";
 import { Editor, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { SyncEngine, type VaultAdapter } from "./sync/engine";
-import { findLineByMarker, parseTaskLine } from "./parse/taskLine";
-import { blockEnd, importLines, missingSubtaskLines } from "./sync/importTask";
+import { blockEnd, findLineByMarker, parseTaskLine } from "./parse/taskLine";
+import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { emptyState, subtaskCount, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
@@ -328,35 +328,38 @@ export default class InlineTasksPlugin extends Plugin {
     const editor = this.editorFor(file.path);
     const read = async () => (editor ? editor.getValue() : await this.app.vault.read(file)).split("\n");
 
+    const tab = this.indentUnit();
     const lines = await read();
     const idx = findLineByMarker(lines, id);
     if (idx < 0) return;
-    const indent = /^\s*/.exec(lines[idx])![0];
-    const { lines: add, items } = missingSubtaskLines(id, open, isLinked, indent, this.indentUnit());
-    if (!add.length) {
+    const { added } = withMissingSubtasks(lines, idx, id, open, isLinked, tab);
+    if (!added.length) {
       new Notice(subtaskCount(this.state, id) ? "Its open subtasks are already in your notes" : "This task has no open subtasks");
       return;
     }
     // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
-    await this.engine.registerImport(file.path, items.map((item, i) => ({ item, line: add[i] })));
-    // Found again, in case the note changed while the subtasks were being linked.
+    await this.engine.registerImport(file.path, added);
+    // Placed again, in case the note changed meanwhile; the ones just linked still count as missing.
+    const adding = new Set(added.map((a) => a.item.id));
+    const place = (ls: string[], at: number) => withMissingSubtasks(ls, at, id, open, (t) => !adding.has(t) && isLinked(t), tab).lines;
     if (editor) {
       const ls = await read();
       const at = findLineByMarker(ls, id);
       if (at >= 0) {
+        // Replace the block nested under the task with the block including the new subtasks.
         const end = blockEnd(ls, at);
-        editor.replaceRange(`\n${add.join("\n")}`, { line: end, ch: ls[end].length });
+        const next = place(ls, at);
+        const block = next.slice(at + 1, end + 1 + next.length - ls.length);
+        editor.replaceRange(`\n${block.join("\n")}`, { line: at, ch: ls[at].length }, { line: end, ch: ls[end].length });
       }
     } else {
       await this.app.vault.process(file, (c) => {
         const ls = c.split("\n");
         const at = findLineByMarker(ls, id);
-        if (at < 0) return c;
-        ls.splice(blockEnd(ls, at) + 1, 0, ...add);
-        return ls.join("\n");
+        return at < 0 ? c : place(ls, at).join("\n");
       });
     }
-    new Notice(items.length === 1 ? "Added 1 subtask" : `Added ${items.length} subtasks`);
+    new Notice(added.length === 1 ? "Added 1 subtask" : `Added ${added.length} subtasks`);
     this.refresh();
   }
 

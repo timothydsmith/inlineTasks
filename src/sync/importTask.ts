@@ -1,5 +1,10 @@
-import { indentWidth, parseTaskLine, serializeTask } from "../parse/taskLine";
+import { blockEnd, parseTaskLine, serializeTask } from "../parse/taskLine";
 import { dueDate, type TodoistItem } from "../todoist/client";
+import { childLines, compareSiblings } from "./order";
+
+/** Todoist's order for two sibling tasks. */
+const byTodoistOrder = (a: TodoistItem, b: TodoistItem) =>
+  compareSiblings({ id: a.id, key: a.order_key, childOrder: a.child_order }, { id: b.id, key: b.order_key, childOrder: b.child_order });
 
 /**
  * Lines for importing an existing Todoist task into a note: the task, then (unless `withSubtasks`
@@ -27,8 +32,7 @@ export function importLines(
     seen.add(item.id);
     lines.push(taskLine(item, indent + tab.repeat(depth)));
     items.push(item);
-    const kids = (children.get(item.id) ?? []).filter((k) => !isLinked(k.id));
-    kids.sort((a, b) => (a.child_order ?? 0) - (b.child_order ?? 0));
+    const kids = (children.get(item.id) ?? []).filter((k) => !isLinked(k.id)).sort(byTodoistOrder);
     for (const k of kids) add(k, depth + 1, seen);
   };
   add(root, 0, new Set());
@@ -36,42 +40,45 @@ export function importLines(
 }
 
 /**
- * Lines for a synced task's open subtasks that aren't in any note yet, each with its own open
- * subtasks, in Todoist's order: to go beneath the task's line, one `tab` deeper than `indent`.
+ * The note's lines with the synced task on line `parentLine` given its open subtasks that aren't
+ * in any note yet, each with its own open subtasks, one `tab` deeper than the task. Each goes
+ * where Todoist has it: after the nearest subtask before it in Todoist's order that's already
+ * under the task here, or first if there's none.
  */
-export function missingSubtaskLines(
+export function withMissingSubtasks(
+  lines: string[],
+  parentLine: number,
   parentId: string,
   open: TodoistItem[],
   isLinked: (id: string) => boolean,
-  indent: string,
   tab: string,
-): { lines: string[]; items: TodoistItem[] } {
-  const kids = open
-    .filter((i) => i.parent_id === parentId && !isLinked(i.id))
-    .sort((a, b) => (a.child_order ?? 0) - (b.child_order ?? 0));
-  const lines: string[] = [];
-  const items: TodoistItem[] = [];
-  for (const kid of kids) {
-    const sub = importLines(kid, open, isLinked, indent + tab, tab);
-    lines.push(...sub.lines);
-    items.push(...sub.items);
+): { lines: string[]; added: { item: TodoistItem; line: string }[] } {
+  const indent = /^\s*/.exec(lines[parentLine])![0] + tab;
+  const kids = open.filter((i) => i.parent_id === parentId).sort(byTodoistOrder);
+  let out = [...lines];
+  const added: { item: TodoistItem; line: string }[] = [];
+  for (let k = 0; k < kids.length; k++) {
+    const kid = kids[k];
+    if (isLinked(kid.id)) continue;
+    const block = importLines(kid, open, isLinked, indent, tab);
+    // Where the subtasks before it in Todoist's order are in the note (including ones just added).
+    const here = new Map<string, number>();
+    for (const l of childLines(out, parentLine)) {
+      const id = parseTaskLine(out[l])?.todoistId;
+      if (id) here.set(id, l);
+    }
+    let after = parentLine;
+    for (let j = k - 1; j >= 0; j--) {
+      const l = here.get(kids[j].id);
+      if (l !== undefined) {
+        after = blockEnd(out, l);
+        break;
+      }
+    }
+    out = [...out.slice(0, after + 1), ...block.lines, ...out.slice(after + 1)];
+    block.items.forEach((item, i) => added.push({ item, line: block.lines[i] }));
   }
-  return { lines, items };
-}
-
-/**
- * The last line of the block nested under line `idx` (its subtasks, their subtasks, and any
- * indented text), or `idx` itself if nothing is nested under it. Trailing blank lines aren't part of it.
- */
-export function blockEnd(lines: string[], idx: number): number {
-  const width = indentWidth(lines[idx]);
-  let last = idx;
-  for (let j = idx + 1; j < lines.length; j++) {
-    if (!lines[j].trim()) continue;
-    if (indentWidth(lines[j]) <= width) break;
-    last = j;
-  }
-  return last;
+  return { lines: out, added };
 }
 
 /** One task as a checkbox line: its title, `📅` due date and marker. */
@@ -91,9 +98,4 @@ export function taskLine(item: TodoistItem, indent: string): string {
     priorityRef: null,
     dueRef: null,
   });
-}
-
-/** The title an imported line will be read as, used as its merge base. */
-export function lineTitle(line: string): string {
-  return parseTaskLine(line)?.content ?? "";
 }
