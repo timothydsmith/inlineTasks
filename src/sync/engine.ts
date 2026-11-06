@@ -53,6 +53,8 @@ export class SyncEngine {
   private busy: Promise<unknown> = Promise.resolve();
   /** Task ids we've already run a full sync for, to fetch their details (see missingDetails). */
   private fetchTried = new Set<string>();
+  /** A push sent something only a pull can complete (a due date in words). See takePullRequest. */
+  private wantPull = false;
 
   constructor(
     private client: TodoistClient,
@@ -220,8 +222,9 @@ export class SyncEngine {
     const commands: Command[] = [];
     const onOk: Record<string, () => void> = {};
     const seenIds = new Set<string>();
-    /** Real task ids whose `#[Project]` reference should be removed from the line. */
-    const stripProjects = new Set<string>();
+    /** References this push applied to synced tasks, by task id, to remove from their lines. */
+    const applied = new Map<string, AppliedRefs>();
+    const markApplied = (id: string, refs: AppliedRefs) => applied.set(id, { ...applied.get(id), ...refs });
     /** Projects created by this push: temp id → lower-cased name. */
     const newProjects = new Map<string, string>();
 
@@ -245,10 +248,6 @@ export class SyncEngine {
       return tmp;
     };
 
-    /** Real task ids → the `@labels` to remove from their line, once applied. */
-    const stripLabels = new Map<string, string[]>();
-    /** Real task ids → the `pN` to remove from their line, once applied. */
-    const stripPriorities = new Map<string, number>();
     /** Labels created by this push: key → name as created. */
     const newLabels = new Map<string, string>();
     /**
@@ -300,7 +299,9 @@ export class SyncEngine {
           args.labels = labels;
         }
         if (task.priorityRef) args.priority = toApiPriority(task.priorityRef);
-        if (task.due) args.due = { date: task.due };
+        // Due date in words: Todoist works it out, and the next pull writes it to the line.
+        if (task.dueRef) args.due = dueFromWords(task.dueRef);
+        else if (task.due) args.due = { date: task.due };
         // Same uuid on retry: Todoist de-duplicates commands it has already applied.
         commands.push({ type: "item_add", uuid: task.pendingUuid, temp_id: task.pendingUuid, args });
         continue;
@@ -326,11 +327,11 @@ export class SyncEngine {
         } else {
           const target = projectTarget(task.projectRef);
           if (target && target === this.state.remote[id]?.projectId) {
-            stripProjects.add(id); // already there
+            markApplied(id, { project: true }); // already there
           } else if (target) {
             const cmd: Command = { type: "item_move", uuid: makeUuid(), args: { id, project_id: target } };
             commands.push(cmd);
-            onOk[cmd.uuid] = () => stripProjects.add(id);
+            onOk[cmd.uuid] = () => markApplied(id, { project: true });
           }
         }
       }
@@ -348,13 +349,13 @@ export class SyncEngine {
             for (const n of names) if (!merged.some((c) => labelKey(c) === labelKey(n))) merged.push(n);
             const refs = task.labelRefs;
             if (merged.length === current.length) {
-              stripLabels.set(id, refs); // already has them
+              markApplied(id, { labels: refs }); // already has them
             } else {
               const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, labels: merged } };
               commands.push(cmd);
               onOk[cmd.uuid] = () => {
                 meta.labels = merged;
-                stripLabels.set(id, refs);
+                markApplied(id, { labels: refs });
               };
             }
           }
@@ -368,20 +369,40 @@ export class SyncEngine {
           const ref = task.priorityRef;
           const priority = toApiPriority(ref);
           if (meta?.priority === priority) {
-            stripPriorities.set(id, ref); // already set
+            markApplied(id, { priority: ref }); // already set
           } else {
             const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, priority } };
             commands.push(cmd);
             onOk[cmd.uuid] = () => {
               if (meta) meta.priority = priority;
-              stripPriorities.set(id, ref);
+              markApplied(id, { priority: ref });
             };
           }
+        }
+      }
+      // Due date in words on a synced task: send it to Todoist, then strip it. The pull that follows
+      // writes the date Todoist worked out to the line as `📅`. Not while the line is being edited.
+      if (task.dueRef) {
+        if (line === opts.skipLine) {
+          deferred = true;
+        } else {
+          const ref = task.dueRef;
+          const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, due: dueFromWords(ref) } };
+          commands.push(cmd);
+          const lineDue = local.due;
+          onOk[cmd.uuid] = () => {
+            markApplied(id, { due: ref });
+            // The line's `📅` is superseded: count it as synced, so the pull's date replaces it.
+            rec!.base = { ...rec!.base, due: lineDue };
+            this.wantPull = true;
+          };
         }
       }
       if (adopted) continue;
 
       const { push } = merge(rec.base, local, rec.base, 0, 0);
+      // Words beat an edited `📅` on the same line; they're the newer intent.
+      if (task.dueRef && line !== opts.skipLine) delete push.due;
       if (isEmpty(push)) continue;
       for (const cmd of commandsFor(id, push)) {
         commands.push(cmd);
@@ -399,7 +420,7 @@ export class SyncEngine {
     }
 
     if (!commands.length) {
-      await this.stripRefs(path, stripProjects, stripLabels, stripPriorities);
+      await this.stripRefs(path, applied);
       await this.save();
       return { deferred };
     }
@@ -435,7 +456,7 @@ export class SyncEngine {
       delete this.state.pendingProjects[key];
     }
     for (const cmd of commands) {
-      if (cmd.type !== "item_move" || !stripProjects.has(cmd.args.id as string)) continue;
+      if (cmd.type !== "item_move" || !applied.get(cmd.args.id as string)?.project) continue;
       const meta = this.state.remote[cmd.args.id as string];
       const pid = cmd.args.project_id as string;
       if (meta) meta.projectId = mapping[pid] ?? pid;
@@ -449,6 +470,7 @@ export class SyncEngine {
     const inbox = Object.entries(this.state.projects).find(([, p]) => p.inbox)?.[0];
     for (const [tmp, realId] of resolved) {
       const cmd = commands.find((c) => c.uuid === tmp && c.type === "item_add");
+      if ((cmd?.args.due as { string?: string } | undefined)?.string) this.wantPull = true; // fetch the date
       const pid = cmd?.args.project_id as string | undefined;
       const projectId = pid ? (mapping[pid] ?? pid) : inbox;
       if (!cmd || !projectId || !this.state.tasks[realId] || this.state.remote[realId]) continue;
@@ -457,43 +479,39 @@ export class SyncEngine {
       const priority = (cmd.args.priority as number | undefined) ?? 1;
       this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels };
     }
-    await this.stripRefs(path, stripProjects, stripLabels, stripPriorities);
+    await this.stripRefs(path, applied);
 
     await this.save();
     return { deferred };
   }
 
   /**
-   * Remove applied references from synced lines: `#[Project]` for the ids in `projects`, the named
-   * `@labels` for each id in `labels`, and the `pN` for each id in `priorities` (each only if it's
-   * still what was applied, in case another was typed meanwhile).
+   * Remove references this push applied from their synced lines. Labels, priority and due date
+   * are removed only if still what was applied, in case something else was typed meanwhile.
    */
-  private async stripRefs(
-    path: string,
-    projects: Set<string>,
-    labels: Map<string, string[]>,
-    priorities: Map<string, number>,
-  ): Promise<void> {
-    if (!projects.size && !labels.size && !priorities.size) return;
+  private async stripRefs(path: string, applied: Map<string, AppliedRefs>): Promise<void> {
+    if (!applied.size) return;
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
       let changed = false;
-      for (const id of new Set([...projects, ...labels.keys(), ...priorities.keys()])) {
+      for (const [id, a] of applied) {
         const idx = findLineByMarker(lines, id);
         const task = idx >= 0 ? parseTaskLine(lines[idx]) : null;
         if (!task) continue;
-        const applied = new Set((labels.get(id) ?? []).map(labelKey));
-        const labelRefs = task.labelRefs.filter((l) => !applied.has(labelKey(l)));
-        const projectRef = projects.has(id) ? null : task.projectRef;
-        const priorityRef = priorities.get(id) === task.priorityRef ? null : task.priorityRef;
+        const appliedLabels = new Set((a.labels ?? []).map(labelKey));
+        const labelRefs = task.labelRefs.filter((l) => !appliedLabels.has(labelKey(l)));
+        const projectRef = a.project ? null : task.projectRef;
+        const priorityRef = a.priority === task.priorityRef ? null : task.priorityRef;
+        const dueRef = a.due === task.dueRef ? null : task.dueRef;
         if (
           projectRef === task.projectRef &&
           labelRefs.length === task.labelRefs.length &&
-          priorityRef === task.priorityRef
+          priorityRef === task.priorityRef &&
+          dueRef === task.dueRef
         ) {
           continue;
         }
-        lines[idx] = serializeTask({ ...task, projectRef, labelRefs, priorityRef });
+        lines[idx] = serializeTask({ ...task, projectRef, labelRefs, priorityRef, dueRef });
         changed = true;
       }
       return changed ? lines.join("\n") : content;
@@ -509,8 +527,16 @@ export class SyncEngine {
         if (idx < 0) continue;
         const task = parseTaskLine(lines[idx]);
         if (!task) continue;
-        // The create carried the line's `#[Project]` and `@labels`, so the references have done their job.
-        lines[idx] = serializeTask({ ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [], priorityRef: null });
+        // The create carried the line's references, so they've done their job.
+        lines[idx] = serializeTask({
+          ...task,
+          pendingUuid: null,
+          todoistId: realId,
+          projectRef: null,
+          labelRefs: [],
+          priorityRef: null,
+          dueRef: null,
+        });
         this.state.tasks[realId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
       }
       return lines.join("\n");
@@ -518,6 +544,16 @@ export class SyncEngine {
   }
 
   // ---------------------------------------------------------------- pull
+
+  /**
+   * True (once) if a push since the last call sent something that only a pull completes, such as
+   * a due date in words, whose actual date Todoist works out. The caller should pull soon.
+   */
+  takePullRequest(): boolean {
+    const want = this.wantPull;
+    this.wantPull = false;
+    return want;
+  }
 
   pull(): Promise<void> {
     return this.exclusive(() => this.pullInner());
@@ -690,6 +726,22 @@ export class SyncEngine {
 /** Comparison key for project names: case- and whitespace-insensitive. */
 export function projectKey(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** References applied to a synced task by one push, to remove from its line. */
+interface AppliedRefs {
+  project?: boolean;
+  labels?: string[];
+  priority?: number;
+  due?: string;
+}
+
+/**
+ * Todoist due object for a date in words. Todoist parses the string as its Quick Add does
+ * (numeric dates follow the user's Todoist date format), including recurrence ("every monday").
+ */
+export function dueFromWords(words: string): { string: string; lang: string } {
+  return { string: words, lang: "en" };
 }
 
 /** `pN` as written (1 = p1, urgent) → Todoist's API value (4 = urgent … 1 = none). */

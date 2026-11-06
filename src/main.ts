@@ -303,7 +303,8 @@ export default class InlineTasksPlugin extends Plugin {
     }
     // A task linked on another device arrived here: fetch its project and due date for the chip now,
     // rather than at the next scheduled pull.
-    if (this.engine.missingDetails().length) await this.runPull();
+    // Or a due date in words was sent: fetch the date Todoist worked out, to write it to the line.
+    if (this.engine.takePullRequest() || this.engine.missingDetails().length) await this.runPull();
     else this.refresh();
   }
 

@@ -57,6 +57,26 @@ describe("parseTaskLine", () => {
     }
   });
 
+  it("extracts a due date in words", () => {
+    const cases: [string, string | null, string][] = [
+      ["- [ ] Call Bob today about it", "today", "Call Bob about it"],
+      ["- [ ] Send invoice Next  Friday.", "Next Friday", "Send invoice ."],
+      ["- [ ] Pay rent every month", "every month", "Pay rent"],
+      ["- [ ] Gym every monday", "every monday", "Gym"],
+      ["- [ ] Plan next week", "next week", "Plan"],
+      ["- [ ] Renew passport 15/11", "15/11", "Renew passport"],
+      ["- [ ] Renew 1/2/2027", "1/2/2027", "Renew"],
+      ["- [ ] Lunch friday then saturday", "saturday", "Lunch then"], // last wins
+      ["- [ ] Buy sun cream on sat", null, "Buy sun cream on sat"], // no abbreviations
+      ["- [ ] Check 31/13 and 15/11x", null, "Check 31/13 and 15/11x"],
+      ["- [ ] Fridays are long", null, "Fridays are long"],
+    ];
+    for (const [line, dueRef, text] of cases) {
+      const t = parseTaskLine(line)!;
+      expect([t.dueRef, t.text]).toEqual([dueRef, text]);
+    }
+  });
+
   it("doesn't read references inside a bracketed name", () => {
     const t = parseTaskLine("- [ ] Plan #[Phase p1] @[Errands @home]")!;
     expect(t.projectRef).toBe("Phase p1");

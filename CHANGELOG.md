@@ -9,6 +9,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ### Added
 - `p1`–`p4` on a checkbox line sets the task's Todoist priority, on create or later (`p4` clears it). The word is removed from the line once applied, since the chip shows the priority.
+- Due dates in words: `today`, `tomorrow`, weekdays, `next friday`, `next week`, `every month` and other repeats, and `15/11`. Todoist works out the date, and the words are replaced on the line by `📅 YYYY-MM-DD`. `every …` makes a repeating task.
 
 ### Fixed
 - A `@` inside a bracketed project name, such as `#[Errands @home]`, no longer also adds a label.

@@ -93,8 +93,33 @@ When the task next syncs, its priority is set and the word is removed from the l
 
 - **New or synced tasks:** a new task is created with that priority, and a synced task's priority is changed. `p4` clears it.
 - **A word of its own:** `mp3`, `#p1`, `p1st` and `(p1)` don't count. The last one on the line wins.
-- **In a title:** a separate `p1`–`p4` word is always read as a priority, so "Review p2 draft" becomes "Review draft" at p2. Write it another way, such as "Review P-2 draft", to keep it.
+- **In a title:** a separate `p1`–`p4` word is always read as a priority, so "Review p2 draft" becomes "Review draft" at p2. Write it another way, such as "Review P-2 draft", to keep it. This also applies to a title changed in Todoist: it's read on the next sync from this note.
 - **Timing:** like project and label references, it's applied once you move off the line, or straight away with **Sync now**.
+
+### Setting a due date in words
+
+Instead of typing `📅 YYYY-MM-DD`, write the date in words anywhere on a checkbox line:
+
+```markdown
+- [ ] Send the invoice next friday
+- [ ] Pay rent every month
+- [ ] Renew passport 15/11
+```
+
+When the task next syncs, the words are sent to Todoist, which works out the date the way its Quick Add does. A few seconds later the date comes back, and the words are replaced on the line by `📅 YYYY-MM-DD`.
+
+| You can write | Means |
+|---|---|
+| `today`, `tomorrow` | That day |
+| `monday` … `sunday`, `next friday` | The coming weekday |
+| `next week` | Next Monday (Todoist's meaning) |
+| `every day`, `every weekday`, `every week`, `every month`, `every year`, `every monday` … | A repeating task (↻ on the chip) |
+| `15/11`, `15/11/27`, `15/11/2027` | That date, read in your Todoist date format (Settings → General) |
+
+- **New or synced tasks:** a new task is created with that date, and a synced task's date is changed. Words beat a `📅` on the same line.
+- **Phrases of their own:** each must be separate words. Weekdays are full names only, so "sun", "sat" and "wed" are left alone, as are "Fridays" and "15/11x". The last date on the line wins.
+- **In a title:** a separate date word is always read as a date, so "Call Bob today about it" becomes "Call Bob about it", due today. The same goes for `24/7` or `1/2`. Write it another way to keep it, such as "Call Bob (today) about it".
+- **Timing:** like other references, it's applied once you move off the line, or straight away with **Sync now**. It needs a connection, since Todoist works out the date.
 
 ### Excluding things
 - **Folders or notes** listed in settings (defaults to `Templates`). An entry matches a folder and everything inside it, or a single note by its path, e.g. `Journal/Private.md`.

@@ -14,6 +14,9 @@
  *                      once applied, like a project reference; the chip shows the task's labels.
  * - `p1` … `p4`        set the task's Todoist priority (p1 = urgent, p4 = none). A separate word;
  *                      the last one wins. Stripped once applied; the chip shows the priority.
+ * - `today`, `friday`, `next week`, `every monday`, `15/11` ...  a due date in words (see
+ *                      DUE_WORDS_RE_G). Todoist works out the date; once it's pulled back, the
+ *                      words are replaced on the line by `📅 YYYY-MM-DD`.
  */
 
 export interface TaskFields {
@@ -38,6 +41,8 @@ export interface ParsedTask extends TaskFields {
   labelRefs: string[];
   /** Priority from a `p1`–`p4` word on the line, as written (1 = p1, urgent), or null. The last one wins. */
   priorityRef: number | null;
+  /** Due date in words (`next friday`, `15/11`, ...), as written, or null. The last one wins. */
+  dueRef: string | null;
 }
 
 const CHECKBOX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)\[(.)\]\s?(.*)$/;
@@ -54,6 +59,22 @@ const PROJECT_RE_G = /(^|\s)#\[([^\]\n]*)\]/g;
 const LABEL_RE_G = /(^|\s)@(?:\[([^\]\n]*)\]|([^\s@[\]#()]*[^\s@[\]#().,;:!?'"]))/g;
 /** `p1`–`p4` as a word of its own (not `mp3`, `p1st` or `#p1`). */
 const PRIORITY_RE_G = /(^|\s)[pP]([1-4])(?=\s|$)/g;
+const WEEKDAY = "monday|tuesday|wednesday|thursday|friday|saturday|sunday";
+/**
+ * Due dates in words, each a phrase of its own: `today`, `tomorrow`, a weekday (optionally after
+ * `next`), `next week`, `every day|weekday|week|month|year|<weekday>`, and `dd/mm`, `dd/mm/yy`,
+ * `dd/mm/yyyy`. Todoist works out the actual date. Weekdays are full names only, since "sun",
+ * "sat" and "wed" are ordinary words. Ends at a space, the end of the line, or `.,;!?`.
+ */
+const DUE_WORDS_RE_G = new RegExp(
+  "(^|\\s)(" +
+    `every\\s+(?:day|weekday|week|month|year|${WEEKDAY})` +
+    `|next\\s+(?:week|${WEEKDAY})` +
+    `|today|tomorrow|${WEEKDAY}` +
+    "|(?:0?[1-9]|[12]\\d|3[01])/(?:0?[1-9]|1[0-2])(?:/(?:\\d{4}|\\d{2}))?" +
+    ")(?=[\\s.,;!?]|$)",
+  "gi",
+);
 /** Names that must be written in the bracketed form. */
 const LABEL_NEEDS_BRACKETS = /[\s@[\]#()]|[.,;:!?'"]$/;
 const PENDING_PREFIX = "new-";
@@ -81,7 +102,10 @@ export function parseTaskLine(line: string): ParsedTask | null {
   s = s.replace(LABEL_RE_G, "$1");
   let priorityRef: number | null = null;
   for (const p of s.matchAll(PRIORITY_RE_G)) priorityRef = Number(p[2]);
-  const text = s.replace(PRIORITY_RE_G, "$1").replace(/\s+/g, " ").trim();
+  s = s.replace(PRIORITY_RE_G, "$1");
+  let dueRef: string | null = null;
+  for (const d of s.matchAll(DUE_WORDS_RE_G)) dueRef = d[2].replace(/\s+/g, " ");
+  const text = s.replace(DUE_WORDS_RE_G, "$1").replace(/\s+/g, " ").trim();
 
   return {
     prefix,
@@ -95,6 +119,7 @@ export function parseTaskLine(line: string): ParsedTask | null {
     projectRef,
     labelRefs,
     priorityRef,
+    dueRef,
   };
 }
 
@@ -109,6 +134,7 @@ export function serializeTask(task: ParsedTask): string {
   const status = task.checked ? (task.status !== " " ? task.status : "x") : " ";
   let out = `${task.prefix}[${status}] ${task.text}`;
   if (task.priorityRef) out += ` p${task.priorityRef}`;
+  if (task.dueRef) out += ` ${task.dueRef}`;
   for (const l of task.labelRefs) out += ` ${labelRef(l)}`;
   if (task.projectRef) out += ` #[${task.projectRef}]`;
   if (task.due) out += ` 📅 ${task.due}`;
