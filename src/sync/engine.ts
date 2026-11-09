@@ -49,6 +49,8 @@ export interface EngineSettings {
    * recurrence appears on the line below" setting), so history lines go above the task's line.
    */
   historyAbove?: boolean;
+  /** The date the Tasks plugin takes from a note's name as its tasks' scheduled date, or null (see fileDate.ts). */
+  fileDate?: (path: string) => string | null;
 }
 
 export interface PushOptions {
@@ -179,7 +181,7 @@ export class SyncEngine {
     const counts: Record<string, number> = {};
     for (const path of this.vault.markdownFiles()) {
       if (!this.isFileEligible(path)) continue;
-      const n = findTasks(await this.vault.read(path)).filter((t) => this.wantsCreate(t.task)).length;
+      const n = findTasks(await this.vault.read(path), this.fileDate(path)).filter((t) => this.wantsCreate(t.task)).length;
       if (n) {
         const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "/";
         counts[folder] = (counts[folder] ?? 0) + n;
@@ -210,7 +212,7 @@ export class SyncEngine {
         const migrated = (content: string, upgrade: boolean) => {
           const lines = content.split("\n");
           let k = 0;
-          for (const { line, task } of findTasks(content)) {
+          for (const { line, task } of findTasks(content, this.fileDate(path))) {
             if (path === skip?.path && line === skip.line) continue;
             const next = this.migrate(lines[line], task, upgrade);
             if (!next) continue;
@@ -266,6 +268,11 @@ export class SyncEngine {
     const next = this.legacyDates(t, rec);
     if (upgrade && rec && this.isLegacy(rec)) rec.base = { ...rec.base, deadline: null };
     return next === t && !needsRelayout(line, task) ? null : next;
+  }
+
+  /** The date tasks in `path` without a date of their own have, from its name (see fileDate.ts). */
+  private fileDate(path: string): string | null {
+    return this.settings().fileDate?.(path) ?? null;
   }
 
   private tasksFields(): boolean {
@@ -376,7 +383,7 @@ export class SyncEngine {
       let n = 0;
       for (const path of this.vault.markdownFiles()) {
         if (!this.isFileEligible(path)) continue;
-        for (const { task } of findTasks(await this.vault.read(path))) {
+        for (const { task } of findTasks(await this.vault.read(path), this.fileDate(path))) {
           if (!task.todoistId) continue;
           const known = this.state.tasks[task.todoistId];
           if (known) {
@@ -427,7 +434,7 @@ export class SyncEngine {
   registerImport(path: string, imported: { item: TodoistItem; line: string }[]): Promise<void> {
     return this.exclusive(async () => {
       for (const { item, line } of imported) {
-        const parsed = parseTaskLine(line);
+        const parsed = parseTaskLine(line, this.fileDate(path));
         if (!parsed) continue;
         this.state.tasks[item.id] = { path, base: { ...this.localFields(parsed), text: parsed.content, checked: false } };
         this.state.remote[item.id] = {
@@ -475,7 +482,7 @@ export class SyncEngine {
     let repeated = new Set<string>();
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
-      const all = findTasks(content);
+      const all = findTasks(content, this.fileDate(path));
       repeated = this.unlinkRepeated(lines, all);
       for (const found of all) {
         const { line } = found;
@@ -509,7 +516,7 @@ export class SyncEngine {
 
     // 2. Build commands.
     const content = await this.vault.read(path);
-    const tasks = findTasks(content);
+    const tasks = findTasks(content, this.fileDate(path));
     const commands: Command[] = [];
     const onOk: Record<string, () => void> = {};
     const seenIds = new Set<string>();
@@ -1013,7 +1020,7 @@ export class SyncEngine {
       let changed = false;
       for (const [id, a] of applied) {
         const idx = findLineByMarker(lines, id);
-        const parsed = idx >= 0 ? parseTaskLine(lines[idx]) : null;
+        const parsed = idx >= 0 ? parseTaskLine(lines[idx], this.fileDate(path)) : null;
         if (!parsed) continue;
         const task = withTitle(parsed, this.state.tasks[id]?.base.text);
         const appliedLabels = new Set((a.labels ?? []).map(labelKey));
@@ -1043,7 +1050,7 @@ export class SyncEngine {
         const idx = findLineByMarker(lines, PENDING + tmp);
         delete this.state.pending[tmp];
         if (idx < 0) continue;
-        const task = parseTaskLine(lines[idx]);
+        const task = parseTaskLine(lines[idx], this.fileDate(path));
         if (!task) continue;
         // The create carried the line's references, so they've done their job. With Tasks fields
         // written, the priority it was created with stays on the line as a Tasks priority.
@@ -1538,7 +1545,7 @@ export class SyncEngine {
         if (!contents.has(p)) contents.set(p, await this.readOrEmpty(p));
         const content = contents.get(p)!;
         const mtime = this.vault.mtime(p);
-        for (const { task } of findTasks(content)) if (task.todoistId === item.id) found.push({ task: this.readLine(task, rec), mtime, path: p });
+        for (const { task } of findTasks(content, this.fileDate(p))) if (task.todoistId === item.id) found.push({ task: this.readLine(task, rec), mtime, path: p });
         paths.push(p);
       }
       if (!found.length) continue; // moved; the index will re-adopt it on the next push
@@ -1712,7 +1719,7 @@ export class SyncEngine {
       const rewrite = (content: string): string | null => {
         const lines = content.split("\n");
         let changed = false;
-        for (const { line, task } of findTasks(content)) {
+        for (const { line, task } of findTasks(content, this.fileDate(p))) {
           const target = task.todoistId ? targets.get(task.todoistId) : undefined;
           if (!target || (skip?.path === p && skip.line === line)) continue;
           const next = this.syncedLine(task, target);

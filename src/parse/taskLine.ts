@@ -85,6 +85,11 @@ export interface ParsedTask extends TaskFields {
    * text (and so the Todoist title): before the text, or after it. Written back there.
    */
   globalFilterAt?: "start" | "end";
+  /**
+   * The date taken from the note's name, as the Tasks plugin does for a task without a `⏳`, `📅`
+   * or `🛫` date, when it's the task's `due`. Not written as `⏳` while it's still the date.
+   */
+  inferredDue?: string;
 }
 
 /** Tasks-plugin fields other than the due date. Values as Tasks writes them, after the emoji. */
@@ -270,7 +275,11 @@ const DUE_WORDS_RE_G = new RegExp(
 const LABEL_NEEDS_BRACKETS = /[\s@[\]#()]|[.,;:!?'"]$/;
 const PENDING_PREFIX = "new-";
 
-export function parseTaskLine(line: string): ParsedTask | null {
+/**
+ * Read a checkbox line. `fileDate` is the date in the note's name, YYYY-MM-DD, when the Tasks
+ * plugin takes one as the scheduled date: a line with no `⏳`, `📅` or `🛫` date has it as its date.
+ */
+export function parseTaskLine(line: string, fileDate?: string | null): ParsedTask | null {
   const m = CHECKBOX_RE.exec(line);
   if (!m) return null;
   const [, prefix, status, rest] = m;
@@ -305,6 +314,8 @@ export function parseTaskLine(line: string): ParsedTask | null {
     }
   }
   const refs = readRefs(content);
+  const inferred = fileDate && !due && !deadline && !fields.start ? fileDate : null;
+  if (inferred) due = inferred;
   return {
     prefix,
     status,
@@ -317,6 +328,7 @@ export function parseTaskLine(line: string): ParsedTask | null {
     blockLink: block ? block[1] : null,
     ...(globalFilter ? { hasGlobalFilter } : {}),
     ...(globalFilterAt ? { globalFilterAt } : {}),
+    ...(inferred ? { inferredDue: inferred } : {}),
     todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
     pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
     excluded: isExcluded(refs.text),
@@ -394,8 +406,10 @@ export function serializeTask(task: ParsedTask): string {
   if (task.projectRef) out += ` #[${task.projectRef}]`;
   const marker = markerFor(task);
   if (marker) out += ` ${marker}`;
+  // A date from the note's name stays unwritten while the line still takes it from there.
+  const fromName = !!task.inferredDue && task.due === task.inferredDue && !task.deadline && !task.fields?.start;
   for (const f of FIELDS) {
-    const v = f.key === "due" ? task.due : f.key === "deadline" ? task.deadline : task.fields?.[f.key];
+    const v = f.key === "due" ? (fromName ? null : task.due) : f.key === "deadline" ? task.deadline : task.fields?.[f.key];
     if (v) out += ` ${f.write(v)}`;
   }
   if (task.blockLink) out += ` ^${task.blockLink}`;
@@ -421,8 +435,8 @@ export interface TaskLocation {
   task: ParsedTask;
 }
 
-/** Find all checkbox lines in a file, skipping frontmatter and fenced code blocks. */
-export function findTasks(content: string): TaskLocation[] {
+/** Find all checkbox lines in a file, skipping frontmatter and fenced code blocks. `fileDate`: see parseTaskLine. */
+export function findTasks(content: string, fileDate?: string | null): TaskLocation[] {
   const lines = content.split("\n");
   const out: TaskLocation[] = [];
   let i = 0;
@@ -447,7 +461,7 @@ export function findTasks(content: string): TaskLocation[] {
       continue;
     }
     if (fence !== null) continue;
-    const task = parseTaskLine(line);
+    const task = parseTaskLine(line, fileDate);
     if (task) out.push({ line: i, task });
   }
   return out;

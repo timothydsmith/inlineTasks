@@ -4,6 +4,7 @@ import { GONE_GRACE_MS, SyncEngine, type EngineSettings, type VaultAdapter } fro
 import { blockEnd, setTasksGlobalFilter, setTasksStatuses, withProjectRef, withRef } from "../src/parse/taskLine";
 import { importLines, taskLine, withMissingSubtasks } from "../src/sync/importTask";
 import { isoDate } from "../src/sync/dates";
+import { fileDate } from "../src/sync/fileDate";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
 
@@ -1487,6 +1488,39 @@ describe("SyncEngine", () => {
       await engine.pull();
       expect(todoist.items.get("T1")!.checked).toBe(false);
       expect(todoist.items.get("T2")!.checked).toBe(false);
+    });
+  });
+
+  describe("dates from note names", () => {
+    beforeEach(() => {
+      settings.fileDate = (p) => fileDate(p, { enabled: true, folders: ["Daily"], format: "" });
+    });
+
+    it("sends a daily note's date as the date of its tasks without one, leaving the line as it is", async () => {
+      vault.files.set("Daily/2026-11-09.md", "- [ ] Call Bob");
+      vault.files.set("Work/2026-11-09.md", "- [ ] Not a daily note");
+      await engine.pushFile("Daily/2026-11-09.md");
+      await engine.pushFile("Work/2026-11-09.md");
+      await engine.pull();
+      expect(todoist.items.get("T1")!.due).toEqual({ date: "2026-11-09" });
+      expect(todoist.items.get("T2")!.due).toBeNull();
+      expect(vault.files.get("Daily/2026-11-09.md")).toBe("- [ ] Call Bob %%td:T1%%");
+
+      // Other changes leave it unwritten; a new date in Todoist is written.
+      todoist.edit("T1", { content: "Call Bob back" });
+      await engine.pull();
+      expect(vault.files.get("Daily/2026-11-09.md")).toBe("- [ ] Call Bob back %%td:T1%%");
+      todoist.edit("T1", { due: { date: "2026-11-12" } });
+      await engine.pull();
+      expect(vault.files.get("Daily/2026-11-09.md")).toBe("- [ ] Call Bob back %%td:T1%% ⏳ 2026-11-12");
+    });
+
+    it("uses the line's own date over the note's", async () => {
+      vault.files.set("Daily/2026-11-09.md", "- [ ] A ⏳ 2026-11-15\n- [ ] B 📅 2026-11-20");
+      await engine.pushFile("Daily/2026-11-09.md");
+      expect(todoist.items.get("T1")!.due).toEqual({ date: "2026-11-15" });
+      expect(todoist.items.get("T2")!.due).toBeNull();
+      expect(todoist.items.get("T2")!.deadline).toEqual({ date: "2026-11-20" });
     });
   });
 

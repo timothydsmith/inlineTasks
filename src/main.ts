@@ -1,5 +1,5 @@
 import { EditorView } from "@codemirror/view";
-import { Editor, editorInfoField, MarkdownView, normalizePath, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
+import { Editor, editorInfoField, MarkdownView, moment, normalizePath, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { CATALOG_FILE, catalogNote } from "./sync/catalog";
 import { buildExport, exportFileName, fetchHistory, fetchSnapshot, linkedLines, type ObsidianLine, type Snapshot } from "./sync/export";
@@ -7,6 +7,7 @@ import { ExportModal } from "./ui/exportModal";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
 import { blockEnd, findLineByMarker, parseTaskLine, setTasksGlobalFilter, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
+import { fileDate, type FileDateSettings } from "./sync/fileDate";
 import { OriginTracker } from "./sync/origin";
 import { projectRef } from "./sync/projects";
 import { emptyState, subtaskCount, type SyncState } from "./sync/state";
@@ -57,6 +58,8 @@ export default class InlineTasksPlugin extends Plugin {
   private chipVersion = 0;
   /** Tasks puts a repeating task's next occurrence below the ticked line (see EngineSettings.historyAbove). */
   private tasksNextLine = false;
+  /** Tasks' "use filename as scheduled date" settings (see sync/fileDate.ts). */
+  private tasksFileDates: FileDateSettings | null = null;
   /** Chips in the Tasks plugin's query results. */
   private queryChips: QueryChips | null = null;
   private lastErrorAt = 0;
@@ -102,7 +105,7 @@ export default class InlineTasksPlugin extends Plugin {
       this.client,
       this.vaultAdapter(),
       this.state,
-      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit(), historyAbove: this.tasksNextLine }),
+      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit(), historyAbove: this.tasksNextLine, fileDate: (path) => this.fileDate(path) }),
       () => this.saveState(),
       (msg) => this.log(msg),
     );
@@ -230,6 +233,8 @@ export default class InlineTasksPlugin extends Plugin {
     if (!tasks) {
       setTasksStatuses(null);
       setTasksGlobalFilter(null);
+      this.tasksNextLine = false;
+      this.tasksFileDates = null;
       return;
     }
     try {
@@ -237,14 +242,32 @@ export default class InlineTasksPlugin extends Plugin {
         statusSettings?: { coreStatuses?: TasksStatus[]; customStatuses?: TasksStatus[] };
         globalFilter?: string;
         recurrenceOnNextLine?: boolean;
+        useFilenameAsScheduledDate?: boolean;
+        filenameAsScheduledDateFormat?: string;
+        filenameAsDateFolders?: string[];
       } | null;
       const s = data?.statusSettings;
       setTasksStatuses(s ? [...(s.coreStatuses ?? []), ...(s.customStatuses ?? [])] : null);
       setTasksGlobalFilter(data?.globalFilter, this.settings.onlyTasksGlobalFilter);
       this.tasksNextLine = data?.recurrenceOnNextLine === true;
+      this.tasksFileDates = data?.useFilenameAsScheduledDate
+        ? {
+            enabled: true,
+            folders: Array.isArray(data.filenameAsDateFolders) ? data.filenameAsDateFolders.filter((f) => typeof f === "string") : [],
+            format: typeof data.filenameAsScheduledDateFormat === "string" ? data.filenameAsScheduledDateFormat : "",
+          }
+        : null;
     } catch (e) {
       this.log(`couldn't read the Tasks plugin's statuses: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  /** The date Tasks takes from a note's name as its tasks' scheduled date, or null. */
+  private fileDate(path: string): string | null {
+    return fileDate(path, this.tasksFileDates, (name, format) => {
+      const m = moment(name, format, true);
+      return m.isValid() ? m.format("YYYY-MM-DD") : null;
+    });
   }
 
   /** The Tasks plugin, if it's enabled. */
