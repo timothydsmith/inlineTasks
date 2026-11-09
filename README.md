@@ -190,6 +190,8 @@ Lines are written so the [Tasks plugin](https://github.com/obsidian-tasks-group/
 
   - `p1`–`p4` typed on a line, or a priority picked on the chip, is written as the Tasks priority.
   - A task completed in Todoist gets `✅` and the date it was completed. One ticked in the note gets today's date, unless Tasks already added one. Unticking removes the date. Cancelled `[-]` tasks don't get one.
+  - A task cancelled in the note gets `❌` and today's date, as Tasks adds when you cancel one, unless Tasks' **Set cancelled date on every cancelled task** is off. Reopening it, here or in Todoist, removes the date.
+  - If Tasks' **Set created date on every added task** is on, a line that becomes a task gets `➕` and today's date, and an imported task gets the date it was added in Todoist. Off, which is Tasks' default, no `➕` is written.
   - A `🔁` repeat makes the Todoist task repeat, and a repeating Todoist task gets a `🔁`.
   - Turning it on runs a full sync, which writes every open task's priority and repeat to its line. Tasks completed before then don't get a done date.
 - **Statuses** follow your Tasks settings, including custom statuses:
@@ -197,7 +199,7 @@ Lines are written so the [Tasks plugin](https://github.com/obsidian-tasks-group/
   | Tasks status type | Synced task | Line not yet synced |
   |---|---|---|
   | Done, such as `[x]` | Completes it, with a `✅` date if fields are written | Not sent |
-  | Cancelled, such as `[-]` | Completes it, without a `✅` date | Not sent |
+  | Cancelled, such as `[-]` | Completes it, with a `❌` date instead of `✅` if fields are written | Not sent |
   | To do or in progress, such as `[ ]` and `[/]` | Leaves it open | Becomes a Todoist task |
   | Non-task | Leaves it open | Not sent |
 
@@ -369,7 +371,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | Pull interval (minutes) | 5 | Minimum 1. |
 | Import subtasks | Ask each time | Whether **Import task from Todoist** brings a task's open subtasks: **Ask each time**, **Always import** or **Never import**. |
 | Only lines with Tasks' global filter | off | With a global filter set in the Tasks plugin, only checkboxes that have it become Todoist tasks. See [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin). |
-| Write Tasks plugin fields | off | Writes each task's Todoist priority on its line as a Tasks priority and its repeat as `🔁`, both synced both ways, and adds `✅` done dates. See [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin). |
+| Write Tasks plugin fields | off | Writes each task's Todoist priority on its line as a Tasks priority and its repeat as `🔁`, both synced both ways, and adds `✅` done dates, and `❌` cancelled and `➕` created dates as your Tasks settings say. See [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin). |
 | Projects and labels note | off | Keeps a note listing your Todoist projects and labels for agents. See [Notes for agents](#notes-for-agents). |
 | Projects and labels note location | `.obsidian/todoist-projects-and-labels.md` | A path in the vault; `.md` is added if missing. |
 | This device creates tasks | on | Stored per device, not in `data.json`. Off means this device never creates tasks, even ones typed here. |

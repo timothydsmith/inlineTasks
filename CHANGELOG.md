@@ -15,6 +15,8 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
   - A task completed in Todoist gets `✅` and the date it was completed, and one ticked in the note gets today's date. Unticking removes the date.
   - A `🔁` repeat makes the Todoist task repeat, from the line's date, and a repeating Todoist task gets a `🔁`. Changing or removing either changes the other. Rules only one side understands stay where they were written.
   - Imported tasks come with their priority and repeat.
+  - A task cancelled in the note gets `❌` and today's date, following Tasks' **Set cancelled date on every cancelled task**. Reopening it removes the date.
+  - With Tasks' **Set created date on every added task** on, new tasks get `➕` and today's date, and imported tasks the date they were added in Todoist.
 - **Projects and labels note** setting, off by default. When on, the plugin keeps a note listing your Todoist projects and labels, how to write a line that files a task in them, and your folder mappings and excluded folders, so agents and scripts can add tasks to your notes without a Todoist connection of their own. It's rewritten whenever a sync changes it. It goes in the vault's config folder (`.obsidian/todoist-projects-and-labels.md`) unless you set another location.
 
 - Deadlines sync both ways as `📅`, the Tasks plugin's due date. The chip shows a task's deadline after a ◎.

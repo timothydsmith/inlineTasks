@@ -10,6 +10,8 @@ import {
   parseTaskLine,
   PENDING,
   serializeTask,
+  tasksDateSettings,
+  withDate,
   withDoneDate,
   withLinePriority,
   withTitle,
@@ -350,7 +352,8 @@ export class SyncEngine {
    * The task on a line as it should be written before it's synced, or null if the line is fine:
    * - in the current layout, its marker before its fields (see needsRelayout);
    * - with Tasks fields written, a `p1`–`p4` reference becomes the Tasks priority, which then
-   *   syncs, and a task ticked here since the last sync gets a ✅ date, which unticking removes.
+   *   syncs, and a task ticked here since the last sync gets a ✅ date (❌ if cancelled, when Tasks
+   *   adds cancelled dates), which unticking removes.
    */
   private tidy(line: string, task: ParsedTask): ParsedTask | null {
     const rec = task.todoistId ? this.state.tasks[task.todoistId] : undefined;
@@ -362,10 +365,17 @@ export class SyncEngine {
         next = { ...next, priorityRef: null, fields: withLinePriority(next.fields, t.priorityRef) };
       }
       if (rec && !rec.orphaned) {
-        if (t.checked && !isCancelledStatus(t.status) && !t.fields?.done && !rec.base.checked) {
+        const cancelled = isCancelledStatus(t.status);
+        if (t.checked && !cancelled && !t.fields?.done && !rec.base.checked) {
           next = { ...next, fields: withDoneDate(next.fields, isoDate(new Date())) };
         } else if (!t.checked && t.fields?.done) {
           next = { ...next, fields: withDoneDate(next.fields, null) };
+        }
+        // Cancelled here since the last sync: a ❌ date, as Tasks adds when it cancels one.
+        if (t.checked && cancelled && !t.fields?.cancelled && !rec.base.checked && tasksDateSettings().cancelled) {
+          next = { ...next, fields: withDate(next.fields, "cancelled", isoDate(new Date())) };
+        } else if (!t.checked && t.fields?.cancelled) {
+          next = { ...next, fields: withDate(next.fields, "cancelled", null) };
         }
       }
     }
@@ -1054,7 +1064,9 @@ export class SyncEngine {
         if (!task) continue;
         // The create carried the line's references, so they've done their job. With Tasks fields
         // written, the priority it was created with stays on the line as a Tasks priority.
-        const fields = this.tasksFields() && task.priorityRef ? withLinePriority(task.fields, task.priorityRef) : task.fields;
+        let fields = this.tasksFields() && task.priorityRef ? withLinePriority(task.fields, task.priorityRef) : task.fields;
+        // Now a task: a ➕ date, if Tasks is set to add one to new tasks.
+        if (this.tasksFields() && tasksDateSettings().created && !fields?.created) fields = withDate(fields, "created", isoDate(new Date()));
         const created = { ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [], priorityRef: null, dueRef: null, fields };
         lines[idx] = serializeTask(created);
         this.state.tasks[realId] = { path, base: this.localFields(created) };
@@ -1750,7 +1762,7 @@ export class SyncEngine {
         differs = true;
       }
       if (f.checked && !t.checked) fields = withDoneDate(fields, isoDate(target.completedAt ? new Date(target.completedAt) : new Date()));
-      if (!f.checked && t.checked) fields = withDoneDate(fields, null);
+      if (!f.checked && t.checked) fields = withDate(withDoneDate(fields, null), "cancelled", null);
       const rule = t.fields?.recurrence;
       const lineRule = rule ? canonicalRule(rule) : null;
       if (f.recurrence !== undefined && lineRule !== undefined && lineRule !== f.recurrence) {

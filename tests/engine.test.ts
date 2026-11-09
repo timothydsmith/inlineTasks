@@ -1,7 +1,7 @@
 import { generateKeyBetween } from "fractional-indexing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GONE_GRACE_MS, SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { blockEnd, setTasksGlobalFilter, setTasksStatuses, withProjectRef, withRef } from "../src/parse/taskLine";
+import { blockEnd, setTasksDates, setTasksGlobalFilter, setTasksStatuses, withProjectRef, withRef } from "../src/parse/taskLine";
 import { importLines, taskLine, withMissingSubtasks } from "../src/sync/importTask";
 import { isoDate } from "../src/sync/dates";
 import { fileDate } from "../src/sync/fileDate";
@@ -1439,9 +1439,9 @@ describe("SyncEngine", () => {
       vault.files.set("Note.md", "- [d] A %%td:T1%%\n- [c] B %%td:T2%%\n- [~] C %%td:T3%%\n- [!] D %%td:T4%%\n- [~] Not a task");
       await engine.pushFile("Note.md");
       expect(["T1", "T2", "T3", "T4"].map((id) => todoist.items.get(id)!.checked)).toEqual([true, true, false, false]);
-      // Done gets a done date; cancelled doesn't.
+      // Done gets a done date; cancelled a cancelled date.
       expect(vault.files.get("Note.md")).toBe(
-        `- [d] A %%td:T1%% ✅ ${isoDate(new Date())}\n- [c] B %%td:T2%%\n- [~] C %%td:T3%%\n- [!] D %%td:T4%%\n- [~] Not a task`,
+        `- [d] A %%td:T1%% ✅ ${isoDate(new Date())}\n- [c] B %%td:T2%% ❌ ${isoDate(new Date())}\n- [~] C %%td:T3%%\n- [!] D %%td:T4%%\n- [~] Not a task`,
       );
     });
   });
@@ -1792,10 +1792,10 @@ describe("SyncEngine", () => {
       await engine.pull();
       expect(vault.files.get("Note.md")).toBe("- [ ] Pay %%td:T1%%\n- [ ] Skip %%td:T2%%");
 
-      // Ticked here: dated today. Cancelled: no done date.
+      // Ticked here: dated today. Cancelled: a cancelled date, not a done date.
       vault.files.set("Note.md", "- [x] Pay %%td:T1%%\n- [-] Skip %%td:T2%%");
       await engine.pushFile("Note.md");
-      expect(vault.files.get("Note.md")).toBe(`- [x] Pay %%td:T1%% ✅ ${today()}\n- [-] Skip %%td:T2%%`);
+      expect(vault.files.get("Note.md")).toBe(`- [x] Pay %%td:T1%% ✅ ${today()}\n- [-] Skip %%td:T2%% ❌ ${today()}`);
       expect(todoist.items.get("T1")!.checked).toBe(true);
       // A task already completed when last synced isn't dated afresh.
       vault.files.set("Note.md", "- [x] Pay %%td:T1%%\n- [-] Skip %%td:T2%%");
@@ -1806,6 +1806,53 @@ describe("SyncEngine", () => {
       await engine.pushFile("Note.md");
       expect(vault.files.get("Note.md")).toBe("- [ ] Pay %%td:T1%%\n- [-] Skip %%td:T2%%");
       expect(todoist.items.get("T1")!.checked).toBe(false);
+    });
+
+    describe("created and cancelled dates", () => {
+      afterEach(() => setTasksDates(null));
+
+      it("adds ❌ to a line cancelled here and removes it when Todoist reopens the task", async () => {
+        settings.tasksFields = true;
+        vault.files.set("Note.md", "- [ ] Skip");
+        await engine.pushFile("Note.md");
+        await engine.pull();
+        vault.files.set("Note.md", "- [-] Skip %%td:T1%%");
+        await engine.pushFile("Note.md");
+        expect(vault.files.get("Note.md")).toBe(`- [-] Skip %%td:T1%% ❌ ${today()}`);
+        expect(todoist.items.get("T1")!.checked).toBe(true);
+        todoist.edit("T1", { checked: false, completed_at: null });
+        await engine.pull();
+        expect(vault.files.get("Note.md")).toBe("- [ ] Skip %%td:T1%%");
+      });
+
+      it("leaves ❌ off when Tasks doesn't add cancelled dates", async () => {
+        settings.tasksFields = true;
+        setTasksDates({ cancelled: false });
+        vault.files.set("Note.md", "- [ ] Skip");
+        await engine.pushFile("Note.md");
+        await engine.pull();
+        vault.files.set("Note.md", "- [-] Skip %%td:T1%%");
+        await engine.pushFile("Note.md");
+        expect(vault.files.get("Note.md")).toBe("- [-] Skip %%td:T1%%");
+      });
+
+      it("adds ➕ to new tasks only when Tasks adds created dates", async () => {
+        settings.tasksFields = true;
+        vault.files.set("Note.md", "- [ ] A");
+        await engine.pushFile("Note.md");
+        expect(vault.files.get("Note.md")).toBe("- [ ] A %%td:T1%%");
+        setTasksDates({ created: true });
+        vault.files.set("Note.md", "- [ ] A %%td:T1%%\n- [ ] B\n- [ ] C ➕ 2026-01-02");
+        await engine.pushFile("Note.md");
+        expect(vault.files.get("Note.md")).toBe(`- [ ] A %%td:T1%%\n- [ ] B %%td:T2%% ➕ ${today()}\n- [ ] C %%td:T3%% ➕ 2026-01-02`);
+      });
+
+      it("gives imported tasks the date they were added in Todoist as ➕", () => {
+        const item = { id: "X1", content: "Call Bob", description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null, added_at: "2026-10-01T12:00:00Z" } as TodoistItem;
+        expect(taskLine(item, "", true)).toBe("- [ ] Call Bob %%td:X1%%");
+        setTasksDates({ created: true });
+        expect(taskLine(item, "", true)).toBe(`- [ ] Call Bob %%td:X1%% ➕ ${isoDate(new Date(item.added_at!))}`);
+      });
     });
 
     it("writes nothing while turned off", async () => {

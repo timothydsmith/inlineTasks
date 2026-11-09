@@ -1,4 +1,5 @@
-import { blockEnd, parseTaskLine, serializeTask, tasksGlobalFilter, withLinePriority, type TasksFields } from "../parse/taskLine";
+import { blockEnd, parseTaskLine, serializeTask, tasksDateSettings, tasksGlobalFilter, withLinePriority, type TasksFields } from "../parse/taskLine";
+import { isoDate } from "./dates";
 import { canonicalRule } from "./recurrence";
 import { dueDate, type TodoistItem } from "../todoist/client";
 import { childLines, compareSiblings } from "./order";
@@ -85,9 +86,14 @@ export function withMissingSubtasks(
   return { lines: out, added };
 }
 
-/** A Todoist task's priority and repeat as Tasks fields. A repeat Tasks wouldn't understand is left out. */
+/**
+ * A Todoist task's priority and repeat as Tasks fields, and when it was added as `➕` if Tasks adds
+ * created dates. A repeat Tasks wouldn't understand is left out.
+ */
 function importedFields(item: TodoistItem): TasksFields {
   const fields = withLinePriority(undefined, 5 - item.priority);
+  const added = item.added_at ? new Date(item.added_at) : null;
+  if (tasksDateSettings().created && added && !Number.isNaN(added.getTime())) fields.created = isoDate(added);
   const rule = item.due?.is_recurring && item.due.string ? canonicalRule(item.due.string) : undefined;
   if (rule) fields.recurrence = rule;
   return fields;

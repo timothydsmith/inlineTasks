@@ -221,10 +221,28 @@ export function withLinePriority(fields: TasksFields | undefined, p: number): Ta
 
 /** Tasks fields with the done date set, or removed when `date` is null. */
 export function withDoneDate(fields: TasksFields | undefined, date: string | null): TasksFields {
+  return withDate(fields, "done", date);
+}
+
+/** Tasks fields with a date field set, or removed when `date` is null. */
+export function withDate(fields: TasksFields | undefined, key: "done" | "cancelled" | "created", date: string | null): TasksFields {
   const out = { ...fields };
-  if (date) out.done = date;
-  else delete out.done;
+  if (date) out[key] = date;
+  else delete out[key];
   return out;
+}
+
+/** Which dates the Tasks plugin adds: `➕` to new tasks, `❌` to cancelled ones (its defaults: no, yes). */
+let tasksDates = { created: false, cancelled: true };
+
+/** Follow the Tasks plugin's settings for `➕` created and `❌` cancelled dates. Null: its defaults. */
+export function setTasksDates(dates: { created?: boolean; cancelled?: boolean } | null): void {
+  tasksDates = { created: dates?.created === true, cancelled: dates?.cancelled !== false };
+}
+
+/** Whether to add `➕` dates to new tasks and `❌` dates to cancelled ones, as the Tasks plugin is set to. */
+export function tasksDateSettings(): { created: boolean; cancelled: boolean } {
+  return tasksDates;
 }
 
 /** Whether a checkbox status completes the Todoist task. */

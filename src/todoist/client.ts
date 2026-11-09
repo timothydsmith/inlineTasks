@@ -45,6 +45,8 @@ export interface TodoistItem {
   /** Fractional-indexing key: siblings sort by comparing these. Null for tasks not migrated yet. */
   order_key?: string | null;
   updated_at?: string;
+  /** When it was added. */
+  added_at?: string;
   /** When it was completed, for a completed task. */
   completed_at?: string | null;
 }

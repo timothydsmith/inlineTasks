@@ -5,7 +5,7 @@ import { CATALOG_FILE, catalogNote } from "./sync/catalog";
 import { buildExport, exportFileName, fetchHistory, fetchSnapshot, linkedLines, type ObsidianLine, type Snapshot } from "./sync/export";
 import { ExportModal } from "./ui/exportModal";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
-import { blockEnd, findLineByMarker, parseTaskLine, setTasksGlobalFilter, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
+import { blockEnd, findLineByMarker, parseTaskLine, setTasksDates, setTasksGlobalFilter, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { fileDate, type FileDateSettings } from "./sync/fileDate";
 import { OriginTracker } from "./sync/origin";
@@ -233,6 +233,7 @@ export default class InlineTasksPlugin extends Plugin {
     if (!tasks) {
       setTasksStatuses(null);
       setTasksGlobalFilter(null);
+      setTasksDates(null);
       this.tasksNextLine = false;
       this.tasksFileDates = null;
       return;
@@ -245,11 +246,14 @@ export default class InlineTasksPlugin extends Plugin {
         useFilenameAsScheduledDate?: boolean;
         filenameAsScheduledDateFormat?: string;
         filenameAsDateFolders?: string[];
+        setCreatedDate?: boolean;
+        setCancelledDate?: boolean;
       } | null;
       const s = data?.statusSettings;
       setTasksStatuses(s ? [...(s.coreStatuses ?? []), ...(s.customStatuses ?? [])] : null);
       setTasksGlobalFilter(data?.globalFilter, this.settings.onlyTasksGlobalFilter);
       this.tasksNextLine = data?.recurrenceOnNextLine === true;
+      setTasksDates({ created: data?.setCreatedDate, cancelled: data?.setCancelledDate });
       this.tasksFileDates = data?.useFilenameAsScheduledDate
         ? {
             enabled: true,
