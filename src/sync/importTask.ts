@@ -1,4 +1,4 @@
-import { blockEnd, parseTaskLine, serializeTask } from "../parse/taskLine";
+import { blockEnd, parseTaskLine, serializeTask, withLinePriority } from "../parse/taskLine";
 import { dueDate, type TodoistItem } from "../todoist/client";
 import { childLines, compareSiblings } from "./order";
 
@@ -9,7 +9,8 @@ const byTodoistOrder = (a: TodoistItem, b: TodoistItem) =>
 /**
  * Lines for importing an existing Todoist task into a note: the task, then (unless `withSubtasks`
  * is false) its open subtasks beneath it, each level indented one `tab` further, in Todoist's
- * order. Subtasks already linked to a line elsewhere are left out, with their own subtasks.
+ * order. Subtasks already linked to a line elsewhere are left out, with their own subtasks. With
+ * `tasksFields`, each line carries its Todoist priority as a Tasks priority.
  */
 export function importLines(
   root: TodoistItem,
@@ -18,8 +19,9 @@ export function importLines(
   indent: string,
   tab: string,
   withSubtasks = true,
+  tasksFields = false,
 ): { lines: string[]; items: TodoistItem[] } {
-  if (!withSubtasks) return { lines: [taskLine(root, indent)], items: [root] };
+  if (!withSubtasks) return { lines: [taskLine(root, indent, tasksFields)], items: [root] };
   const children = new Map<string, TodoistItem[]>();
   for (const it of open) {
     if (!it.parent_id) continue;
@@ -30,7 +32,7 @@ export function importLines(
   const add = (item: TodoistItem, depth: number, seen: Set<string>) => {
     if (seen.has(item.id) || depth > 20) return; // guard against a malformed tree
     seen.add(item.id);
-    lines.push(taskLine(item, indent + tab.repeat(depth)));
+    lines.push(taskLine(item, indent + tab.repeat(depth), tasksFields));
     items.push(item);
     const kids = (children.get(item.id) ?? []).filter((k) => !isLinked(k.id)).sort(byTodoistOrder);
     for (const k of kids) add(k, depth + 1, seen);
@@ -52,6 +54,7 @@ export function withMissingSubtasks(
   open: TodoistItem[],
   isLinked: (id: string) => boolean,
   tab: string,
+  tasksFields = false,
 ): { lines: string[]; added: { item: TodoistItem; line: string }[] } {
   const indent = /^\s*/.exec(lines[parentLine])![0] + tab;
   const kids = open.filter((i) => i.parent_id === parentId).sort(byTodoistOrder);
@@ -60,7 +63,7 @@ export function withMissingSubtasks(
   for (let k = 0; k < kids.length; k++) {
     const kid = kids[k];
     if (isLinked(kid.id)) continue;
-    const block = importLines(kid, open, isLinked, indent, tab);
+    const block = importLines(kid, open, isLinked, indent, tab, true, tasksFields);
     // Where the subtasks before it in Todoist's order are in the note (including ones just added).
     const here = new Map<string, number>();
     for (const l of childLines(out, parentLine)) {
@@ -81,8 +84,8 @@ export function withMissingSubtasks(
   return { lines: out, added };
 }
 
-/** One task as a checkbox line: its title, `📅` due date and marker. */
-export function taskLine(item: TodoistItem, indent: string): string {
+/** One task as a checkbox line: its title, marker and `📅` due date, and with `tasksFields` its Tasks priority. */
+export function taskLine(item: TodoistItem, indent: string, tasksFields = false): string {
   return serializeTask({
     prefix: `${indent}- `,
     status: " ",
@@ -97,5 +100,6 @@ export function taskLine(item: TodoistItem, indent: string): string {
     labelRefs: [],
     priorityRef: null,
     dueRef: null,
+    fields: tasksFields ? withLinePriority(undefined, 5 - item.priority) : undefined,
   });
 }

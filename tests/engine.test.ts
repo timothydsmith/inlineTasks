@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
 import { blockEnd, withProjectRef, withRef } from "../src/parse/taskLine";
 import { importLines, withMissingSubtasks } from "../src/sync/importTask";
+import { isoDate } from "../src/sync/dates";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
 
@@ -865,6 +866,9 @@ describe("SyncEngine", () => {
       const alone = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "", "\t", false);
       expect(alone.lines).toEqual(["- [ ] Plan trip today %%td:A%% 📅 2030-02-01"]);
       expect(alone.items.map((i) => i.id)).toEqual(["A"]);
+      // Writing Tasks fields: the priority comes too.
+      const tasks = importLines(open.find((i) => i.id === "A")!, open, (id) => engine.isLinked(id), "", "\t", false, true);
+      expect(tasks.lines).toEqual(["- [ ] Plan trip today %%td:A%% 🔺 📅 2030-02-01"]);
     });
 
     it("adds a synced task's missing subtasks where Todoist has them", async () => {
@@ -1176,6 +1180,89 @@ describe("SyncEngine", () => {
       await engine.pushFile("Other.md");
       expect(vault.files.get("Other.md")).toBe("- [ ] Fix %%td:T9%% ⏫\n- [ ] Plain %%td:T8%%");
       expect(todoist.calls.slice(calls).flat().some((c) => c.type === "item_update" && c.args.id === "T1")).toBe(false);
+    });
+  });
+
+  describe("writing Tasks plugin fields", () => {
+    const today = () => isoDate(new Date());
+
+    it("writes Todoist priorities once turned on, and a Tasks priority on a line sets Todoist's", async () => {
+      vault.files.set("Note.md", "- [ ] A\n- [ ] B ⏫");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(todoist.items.get("T2")!.priority).toBe(1); // off: the emoji is only kept
+      todoist.edit("T1", { priority: 4 });
+      settings.tasksFields = true;
+      await engine.pull(); // a full sync, which reaches every task
+      expect(vault.files.get("Note.md")).toBe("- [ ] A %%td:T1%% 🔺\n- [ ] B %%td:T2%% ⏫");
+      expect(todoist.items.get("T2")!.priority).toBe(3);
+
+      vault.files.set("Note.md", "- [ ] A %%td:T1%% 🔼\n- [ ] B %%td:T2%% ⏫");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.priority).toBe(2);
+      expect(state.remote.T1.priority).toBe(2); // the chip follows straight away
+
+      todoist.edit("T1", { priority: 1 });
+      todoist.edit("T2", { priority: 1 });
+      vault.files.set("Note.md", "- [ ] A %%td:T1%% 🔼\n- [ ] B %%td:T2%% 🔽");
+      await engine.pull();
+      // p4 is Tasks' normal priority, written as nothing; 🔽 is p4 too, so it stays.
+      expect(vault.files.get("Note.md")).toBe("- [ ] A %%td:T1%%\n- [ ] B %%td:T2%% 🔽");
+    });
+
+    it("turns p1–p4 into a Tasks priority, on a new task and from the chip", async () => {
+      settings.tasksFields = true;
+      vault.files.set("Note.md", "- [ ] Call p2");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.priority).toBe(3);
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call %%td:T1%% ⏫");
+      vault.files.set("Note.md", withRef(vault.files.get("Note.md")!, "p1"));
+      await engine.pushFile("Note.md");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call %%td:T1%% 🔺");
+      expect(todoist.items.get("T1")!.priority).toBe(4);
+      vault.files.set("Note.md", withRef(vault.files.get("Note.md")!, "p4"));
+      await engine.pushFile("Note.md");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call %%td:T1%%");
+      expect(todoist.items.get("T1")!.priority).toBe(1);
+    });
+
+    it("adds a ✅ date when a task is completed, in Todoist or here, and removes it when unticked", async () => {
+      settings.tasksFields = true;
+      vault.files.set("Note.md", "- [ ] Pay\n- [ ] Skip");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      const done = "2026-11-05T10:00:00Z";
+      todoist.edit("T1", { checked: true, completed_at: done });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(`- [x] Pay %%td:T1%% ✅ ${isoDate(new Date(done))}\n- [ ] Skip %%td:T2%%`);
+      todoist.edit("T1", { checked: false, completed_at: null });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Pay %%td:T1%%\n- [ ] Skip %%td:T2%%");
+
+      // Ticked here: dated today. Cancelled: no done date.
+      vault.files.set("Note.md", "- [x] Pay %%td:T1%%\n- [-] Skip %%td:T2%%");
+      await engine.pushFile("Note.md");
+      expect(vault.files.get("Note.md")).toBe(`- [x] Pay %%td:T1%% ✅ ${today()}\n- [-] Skip %%td:T2%%`);
+      expect(todoist.items.get("T1")!.checked).toBe(true);
+      // A task already completed when last synced isn't dated afresh.
+      vault.files.set("Note.md", "- [x] Pay %%td:T1%%\n- [-] Skip %%td:T2%%");
+      await engine.pushFile("Note.md");
+      expect(vault.files.get("Note.md")).toBe("- [x] Pay %%td:T1%%\n- [-] Skip %%td:T2%%");
+      // Unticked here: the date goes.
+      vault.files.set("Note.md", `- [ ] Pay %%td:T1%% ✅ ${today()}\n- [-] Skip %%td:T2%%`);
+      await engine.pushFile("Note.md");
+      expect(vault.files.get("Note.md")).toBe("- [ ] Pay %%td:T1%%\n- [-] Skip %%td:T2%%");
+      expect(todoist.items.get("T1")!.checked).toBe(false);
+    });
+
+    it("writes nothing while turned off", async () => {
+      vault.files.set("Note.md", "- [ ] Pay p1");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Pay %%td:T1%%");
+      todoist.edit("T1", { checked: true, completed_at: "2026-11-05T10:00:00Z" });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [x] Pay %%td:T1%%");
     });
   });
 

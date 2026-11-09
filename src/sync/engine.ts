@@ -2,16 +2,20 @@ import {
   createsTask,
   findLineByMarker,
   findTasks,
+  linePriority,
   needsRelayout,
   parentLine,
   parseTaskLine,
   PENDING,
   serializeTask,
+  withDoneDate,
+  withLinePriority,
   withTitle,
   type ParsedTask,
   type TaskFields,
 } from "../parse/taskLine";
 import { dueDate, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
+import { isoDate } from "./dates";
 import { isEmpty, merge } from "./merge";
 import { compareSiblings, inOrderOf, moveBlock, reorderBlocks, reorderKeys, sameOrder, type Sibling } from "./order";
 import type { SyncState } from "./state";
@@ -33,6 +37,8 @@ export interface EngineSettings {
   canCreate: boolean;
   /** One level of list indentation, for lines the sync re-indents. Defaults to a tab. */
   indent?: string;
+  /** Write Todoist priorities as Tasks priorities on the line, and ✅ done dates. */
+  tasksFields?: boolean;
 }
 
 export interface PushOptions {
@@ -199,6 +205,49 @@ export class SyncEngine {
     return serializeTask(task.todoistId ? withTitle(task, this.state.tasks[task.todoistId]?.base.text) : task);
   }
 
+  private tasksFields(): boolean {
+    return !!this.settings().tasksFields;
+  }
+
+  /** A line's synced fields: priority too, when Tasks fields are written. */
+  private localFields(task: ParsedTask): TaskFields {
+    const f: TaskFields = { text: task.text, checked: task.checked, due: task.due };
+    if (this.tasksFields()) f.priority = linePriority(task);
+    return f;
+  }
+
+  /** A Todoist task's synced fields, as `localFields` gives a line's. */
+  private remoteFields(item: TodoistItem): TaskFields {
+    const f: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
+    if (this.tasksFields()) f.priority = 5 - item.priority;
+    return f;
+  }
+
+  /**
+   * The task on a line as it should be written before it's synced, or null if the line is fine:
+   * - in the current layout, its marker before its fields (see needsRelayout);
+   * - with Tasks fields written, a `p1`–`p4` reference becomes the Tasks priority, which then
+   *   syncs, and a task ticked here since the last sync gets a ✅ date, which unticking removes.
+   */
+  private tidy(line: string, task: ParsedTask): ParsedTask | null {
+    const rec = task.todoistId ? this.state.tasks[task.todoistId] : undefined;
+    const t = task.todoistId ? withTitle(task, rec?.base.text) : task;
+    let next = t;
+    if (this.tasksFields()) {
+      if (t.priorityRef && (t.todoistId || t.pendingUuid || createsTask(t))) {
+        next = { ...next, priorityRef: null, fields: withLinePriority(next.fields, t.priorityRef) };
+      }
+      if (rec && !rec.orphaned) {
+        if (t.checked && t.status !== "-" && !t.fields?.done && !rec.base.checked) {
+          next = { ...next, fields: withDoneDate(next.fields, isoDate(new Date())) };
+        } else if (!t.checked && t.fields?.done) {
+          next = { ...next, fields: withDoneDate(next.fields, null) };
+        }
+      }
+    }
+    return next === t && !needsRelayout(line, task) ? null : next;
+  }
+
   /**
    * Link every `%%td:<id>%%` marker in the vault that this device has no record of, using the line
    * as the merge base. For a device starting without sync state (a new device, or cleared app
@@ -253,7 +302,7 @@ export class SyncEngine {
       for (const { item, line } of imported) {
         const parsed = parseTaskLine(line);
         if (!parsed) continue;
-        this.state.tasks[item.id] = { path, base: { text: parsed.content, checked: false, due: parsed.due } };
+        this.state.tasks[item.id] = { path, base: { ...this.localFields(parsed), text: parsed.content, checked: false } };
         this.state.remote[item.id] = {
           projectId: item.project_id,
           priority: item.priority,
@@ -294,14 +343,17 @@ export class SyncEngine {
     // 1. Assign pending markers to new tasks and write them to disk first, so a crash
     //    or a second device never results in an unmarked line being created twice.
     const newUuids: string[] = [];
-    let relaid = 0;
+    let tidied = 0;
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
-      for (const { line, task } of findTasks(content)) {
-        if (line !== opts.skipLine && needsRelayout(lines[line], task)) {
-          lines[line] = this.relayout(task);
-          relaid++;
-          continue;
+      for (const found of findTasks(content)) {
+        const { line } = found;
+        let task = found.task;
+        const next = line === opts.skipLine ? null : this.tidy(lines[line], task);
+        if (next) {
+          task = next;
+          lines[line] = serializeTask(next);
+          tidied++;
         }
         if (!this.wantsCreate(task)) continue;
         if (!canCreate) continue;
@@ -313,9 +365,9 @@ export class SyncEngine {
         newUuids.push(id);
         lines[line] = serializeTask({ ...task, pendingUuid: id });
       }
-      return newUuids.length || relaid ? lines.join("\n") : content;
+      return newUuids.length || tidied ? lines.join("\n") : content;
     });
-    if (relaid) this.log(`${path}: moved the marker before the fields on ${relaid} line(s)`);
+    if (tidied) this.log(`${path}: rewrote ${tidied} line(s) for the Tasks plugin`);
     for (const id of newUuids) this.state.pending[id] = { path, createdAt: Date.now() };
     if (newUuids.length) {
       this.log(`${path}: creating ${newUuids.length} new task(s)`);
@@ -420,7 +472,7 @@ export class SyncEngine {
 
     for (const { line, task: parsed } of tasks) {
       let task = parsed;
-      let local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
+      let local = this.localFields(task);
 
       if (task.pendingUuid) {
         const pend = this.state.pending[task.pendingUuid];
@@ -455,7 +507,9 @@ export class SyncEngine {
           if (!labels) continue; // a label can't be created on this device
           args.labels = labels;
         }
-        if (task.priorityRef) args.priority = toApiPriority(task.priorityRef);
+        const priority = task.priorityRef ?? (this.tasksFields() ? linePriority(task) : null);
+        if (priority && priority !== 4) args.priority = toApiPriority(priority);
+        else if (task.priorityRef) args.priority = toApiPriority(task.priorityRef);
         // Due date in words: Todoist works it out, and the next pull writes it to the line.
         if (task.dueRef) args.due = dueFromWords(task.dueRef);
         else if (task.due) args.due = { date: task.due };
@@ -480,7 +534,7 @@ export class SyncEngine {
       if (rec.orphaned) continue;
       // Words of the synced title are title, not references (see withTitle).
       task = withTitle(parsed, rec.base.text);
-      local = { text: task.text, checked: task.checked, due: task.due };
+      local = this.localFields(task);
 
       // `#[Project]` on a synced task: move it, then strip the reference. Not while the line is being edited.
       if (task.projectRef) {
@@ -612,6 +666,7 @@ export class SyncEngine {
         commands.push(cmd);
         onOk[cmd.uuid] = () => {
           rec!.base = { ...rec!.base, ...pickFields(local, push) };
+          if (cmd.type === "item_update" && push.priority !== undefined && meta) meta.priority = toApiPriority(push.priority);
           // A subtask ticked or unticked here: its parent's count changes now, not at the next pull.
           this.state.subtasks ??= {};
           if (cmd.type === "item_close") delete this.state.subtasks[id];
@@ -777,17 +832,12 @@ export class SyncEngine {
         if (idx < 0) continue;
         const task = parseTaskLine(lines[idx]);
         if (!task) continue;
-        // The create carried the line's references, so they've done their job.
-        lines[idx] = serializeTask({
-          ...task,
-          pendingUuid: null,
-          todoistId: realId,
-          projectRef: null,
-          labelRefs: [],
-          priorityRef: null,
-          dueRef: null,
-        });
-        this.state.tasks[realId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
+        // The create carried the line's references, so they've done their job. With Tasks fields
+        // written, the priority it was created with stays on the line as a Tasks priority.
+        const fields = this.tasksFields() && task.priorityRef ? withLinePriority(task.fields, task.priorityRef) : task.fields;
+        const created = { ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [], priorityRef: null, dueRef: null, fields };
+        lines[idx] = serializeTask(created);
+        this.state.tasks[realId] = { path, base: this.localFields(created) };
       }
       return lines.join("\n");
     });
@@ -898,7 +948,8 @@ export class SyncEngine {
     const stale =
       Object.values(this.state.projects).some((p) => p.parentId === undefined || p.order === undefined) ||
       !this.state.labelsSynced ||
-      !this.state.subtasksSynced;
+      !this.state.subtasksSynced ||
+      (this.tasksFields() && !this.state.tasksFieldsSynced);
     const missing = this.missingDetails();
     // Tried once per session: a completed or deleted task isn't returned, and mustn't force a full sync every time.
     for (const id of missing) this.fetchTried.add(id);
@@ -915,6 +966,9 @@ export class SyncEngine {
       this.state.subtasks = {};
       this.state.subtasksSynced = true;
     }
+    // Turned on: a full sync writes every task's priority to its line. Turned off: the next time it's
+    // turned on needs one again.
+    this.state.tasksFieldsSynced = this.tasksFields() && (res.full_sync || !!this.state.tasksFieldsSynced);
     this.noteSubtasks(res.items ?? []);
     for (const l of res.labels ?? []) {
       if (l.is_deleted) delete this.state.labels[l.id];
@@ -1231,13 +1285,19 @@ export class SyncEngine {
       const parsed = parseTaskLine(lines[idx]);
       if (!parsed) continue;
       const task = withTitle(parsed, rec.base.text);
-      const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
-      const remote: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
+      const local = this.localFields(task);
+      const remote = this.remoteFields(item);
       const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;
       const m = merge(rec.base, local, remote, mtime, remoteAt);
       if (m.conflicts.length) conflicts.push(`Conflict on "${task.text}" (${m.conflicts.join(", ")}); resolved`);
       if (!isEmpty(m.pull)) {
-        const next = serializeTask({ ...task, ...m.pull });
+        let fields = task.fields;
+        if (this.tasksFields()) {
+          if (m.pull.priority !== undefined) fields = withLinePriority(fields, m.pull.priority);
+          if (m.pull.checked === true) fields = withDoneDate(fields, isoDate(item.completed_at ? new Date(item.completed_at) : new Date()));
+          if (m.pull.checked === false) fields = withDoneDate(fields, null);
+        }
+        const next = serializeTask({ ...task, ...m.pull, fields });
         if (next !== lines[idx]) {
           lines[idx] = next;
           changed = true;
@@ -1306,6 +1366,7 @@ export function commandsFor(id: string, change: Partial<TaskFields>): Command[] 
   const args: Record<string, unknown> = { id };
   if ("text" in change) args.content = change.text;
   if ("due" in change) args.due = change.due ? { date: change.due } : null;
+  if (change.priority !== undefined) args.priority = toApiPriority(change.priority);
   if (Object.keys(args).length > 1) cmds.push({ type: "item_update", uuid: makeUuid(), args });
   if ("checked" in change) {
     cmds.push({ type: change.checked ? "item_close" : "item_uncomplete", uuid: makeUuid(), args: { id } });

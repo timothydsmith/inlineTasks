@@ -74,6 +74,11 @@ export interface SyncState {
   backfillDone: boolean;
   /** True once this device has moved markers in front of the fields on lines written before 0.4.0. */
   relaidOut?: boolean;
+  /**
+   * True once a full sync has written priorities to the lines since the **Write Tasks plugin
+   * fields** setting was turned on. An incremental sync only returns tasks that changed.
+   */
+  tasksFieldsSynced?: boolean;
 }
 
 export interface ProjectInfo {

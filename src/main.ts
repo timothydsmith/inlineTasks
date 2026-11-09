@@ -358,7 +358,7 @@ export default class InlineTasksPlugin extends Plugin {
     // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
     const replace = current.trim() === "" || (!!list && list[2] === "");
     const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
-    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, this.indentUnit(), withSubtasks);
+    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, this.indentUnit(), withSubtasks, this.settings.tasksFields);
     // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
     await this.engine.registerImport(path, items.map((item, i) => ({ item, line: lines[i] })));
     const text = lines.join("\n");
@@ -398,7 +398,7 @@ export default class InlineTasksPlugin extends Plugin {
     const lines = await read();
     const idx = findLineByMarker(lines, id);
     if (idx < 0) return;
-    const { added } = withMissingSubtasks(lines, idx, id, open, isLinked, tab);
+    const { added } = withMissingSubtasks(lines, idx, id, open, isLinked, tab, this.settings.tasksFields);
     if (!added.length) {
       new Notice(subtaskCount(this.state, id) ? "Its open subtasks are already in your notes" : "This task has no open subtasks");
       return;
@@ -407,7 +407,7 @@ export default class InlineTasksPlugin extends Plugin {
     await this.engine.registerImport(file.path, added);
     // Placed again, in case the note changed meanwhile; the ones just linked still count as missing.
     const adding = new Set(added.map((a) => a.item.id));
-    const place = (ls: string[], at: number) => withMissingSubtasks(ls, at, id, open, (t) => !adding.has(t) && isLinked(t), tab).lines;
+    const place = (ls: string[], at: number) => withMissingSubtasks(ls, at, id, open, (t) => !adding.has(t) && isLinked(t), tab, this.settings.tasksFields).lines;
     if (editor) {
       const ls = await read();
       const at = findLineByMarker(ls, id);
@@ -595,7 +595,7 @@ export default class InlineTasksPlugin extends Plugin {
     else this.refresh();
   }
 
-  private async runPull(notify = false): Promise<void> {
+  async runPull(notify = false): Promise<void> {
     if (!this.settings.apiToken) return;
     await this.guard(() => this.engine.pull(), notify);
     this.refresh();

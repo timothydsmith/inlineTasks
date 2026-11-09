@@ -31,6 +31,11 @@ export interface TaskFields {
   text: string;
   checked: boolean;
   due: string | null; // YYYY-MM-DD
+  /**
+   * Priority as written (1 = p1, urgent … 4 = none), from the line's Tasks priority. Only tracked
+   * when the **Write Tasks plugin fields** setting is on; missing otherwise.
+   */
+  priority?: number;
 }
 
 export interface ParsedTask extends TaskFields {
@@ -107,6 +112,35 @@ const BLOCK_LINK_RE = /(?:^|\s)\^([A-Za-z0-9-]+)$/;
 const CLOSED_STATUSES = "xX-";
 /** Statuses an unsynced line can start a Todoist task from: to do, and Tasks' in progress. */
 const OPEN_STATUSES = " /";
+
+/** Tasks priorities for Todoist's p1–p3. p4 is Tasks' normal priority, written as nothing. */
+const PRIORITY_EMOJI: Record<number, string> = { 1: "🔺", 2: "⏫", 3: "🔼" };
+
+/**
+ * A line's Tasks priority as a Todoist priority, as written (1 = p1 … 4 = none): 🔺 is p1, ⏫ p2,
+ * 🔼 p3, and normal, 🔽 and ⏬ are p4, since Todoist has four levels to Tasks' six.
+ */
+export function linePriority(task: Pick<ParsedTask, "fields">): number {
+  const p = task.fields?.priority;
+  for (const [n, e] of Object.entries(PRIORITY_EMOJI)) if (e === p) return Number(n);
+  return 4;
+}
+
+/** Tasks fields with the priority set from a Todoist priority, as written. Keeps 🔽 and ⏬ for p4. */
+export function withLinePriority(fields: TasksFields | undefined, p: number): TasksFields {
+  const out = { ...fields };
+  if (PRIORITY_EMOJI[p]) out.priority = PRIORITY_EMOJI[p];
+  else if (out.priority !== "🔽" && out.priority !== "⏬") delete out.priority;
+  return out;
+}
+
+/** Tasks fields with the done date set, or removed when `date` is null. */
+export function withDoneDate(fields: TasksFields | undefined, date: string | null): TasksFields {
+  const out = { ...fields };
+  if (date) out.done = date;
+  else delete out.done;
+  return out;
+}
 
 /** Whether a checkbox status completes the Todoist task. */
 export function isClosedStatus(status: string): boolean {

@@ -9,6 +9,11 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ### Added
 - Tasks plugin fields stay on the line and out of the Todoist title: `⏳ 🛫 ➕ ✅ ❌` dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔`, `🏁`, and a `^block-link` at the end. Tasks' other spellings of the due date, `📆` and `🗓`, are read as `📅`.
+- **Write Tasks plugin fields** setting, off by default. When on:
+  - Each task's Todoist priority is written on its line as a Tasks priority (🔺 p1, ⏫ p2, 🔼 p3, nothing for p4), and changing either one changes the other.
+  - `p1`–`p4` typed on a line, or a priority picked on the chip, becomes the Tasks priority.
+  - A task completed in Todoist gets `✅` and the date it was completed, and one ticked in the note gets today's date. Unticking removes the date.
+  - Imported tasks come with their priority.
 
 ### Changed
 - The `%%td:…%%` marker goes after the task's text and before its dates and other fields, so the Tasks plugin can read them. Each device moves the marker on existing lines once, the first time it starts this version.

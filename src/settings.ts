@@ -8,6 +8,8 @@ export interface InlineTasksSettings {
   pullIntervalMinutes: number;
   /** Whether **Import task from Todoist** brings a task's open subtasks with it. */
   importSubtasks: ImportSubtasks;
+  /** Write Todoist priorities as Tasks priorities on the line, and ✅ done dates. */
+  tasksFields: boolean;
 }
 
 export type ImportSubtasks = "ask" | "always" | "never";
@@ -18,6 +20,7 @@ export const DEFAULT_SETTINGS: InlineTasksSettings = {
   folderProjects: [],
   pullIntervalMinutes: 5,
   importSubtasks: "ask",
+  tasksFields: false,
 };
 
 export class InlineTasksSettingTab extends PluginSettingTab {
@@ -107,6 +110,19 @@ export class InlineTasksSettingTab extends PluginSettingTab {
             s.importSubtasks = v as ImportSubtasks;
             await this.plugin.saveAll();
           }),
+      );
+
+    new Setting(containerEl)
+      .setName("Write Tasks plugin fields")
+      .setDesc(
+        "For the Tasks plugin's queries: write each task's Todoist priority on its line as a Tasks priority (🔺 p1, ⏫ p2, 🔼 p3), and add a ✅ done date when a task is completed. A Tasks priority typed on a line then sets the Todoist priority.",
+      )
+      .addToggle((t) =>
+        t.setValue(s.tasksFields).onChange(async (v) => {
+          s.tasksFields = v;
+          await this.plugin.saveAll();
+          if (v) void this.plugin.runPull(); // a full sync writes the priorities
+        }),
       );
 
     new Setting(containerEl)
