@@ -5,7 +5,7 @@ import { CATALOG_FILE, catalogNote } from "./sync/catalog";
 import { buildExport, exportFileName, fetchHistory, fetchSnapshot, linkedLines, type ObsidianLine, type Snapshot } from "./sync/export";
 import { ExportModal } from "./ui/exportModal";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
-import { blockEnd, findLineByMarker, parseTaskLine, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
+import { blockEnd, findLineByMarker, parseTaskLine, setTasksGlobalFilter, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { projectRef } from "./sync/projects";
@@ -227,12 +227,17 @@ export default class InlineTasksPlugin extends Plugin {
     const tasks = this.tasksPlugin<Plugin>();
     if (!tasks) {
       setTasksStatuses(null);
+      setTasksGlobalFilter(null);
       return;
     }
     try {
-      const data = (await tasks.loadData()) as { statusSettings?: { coreStatuses?: TasksStatus[]; customStatuses?: TasksStatus[] } } | null;
+      const data = (await tasks.loadData()) as {
+        statusSettings?: { coreStatuses?: TasksStatus[]; customStatuses?: TasksStatus[] };
+        globalFilter?: string;
+      } | null;
       const s = data?.statusSettings;
       setTasksStatuses(s ? [...(s.coreStatuses ?? []), ...(s.customStatuses ?? [])] : null);
+      setTasksGlobalFilter(data?.globalFilter, this.settings.onlyTasksGlobalFilter);
     } catch (e) {
       this.log(`couldn't read the Tasks plugin's statuses: ${e instanceof Error ? e.message : String(e)}`);
     }

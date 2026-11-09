@@ -10,6 +10,8 @@ export interface InlineTasksSettings {
   importSubtasks: ImportSubtasks;
   /** Write Todoist priorities as Tasks priorities on the line, and ✅ done dates. */
   tasksFields: boolean;
+  /** With a Tasks global filter set, only lines that have it become Todoist tasks. */
+  onlyTasksGlobalFilter: boolean;
   /** Keep a note listing the Todoist projects and labels, for agents that write tasks. */
   catalogNote: boolean;
   /** Where that note goes. Empty: `todoist-projects-and-labels.md` in the vault's config folder. */
@@ -27,6 +29,7 @@ export const DEFAULT_SETTINGS: InlineTasksSettings = {
   pullIntervalMinutes: 5,
   importSubtasks: "ask",
   tasksFields: false,
+  onlyTasksGlobalFilter: false,
   catalogNote: false,
   catalogNotePath: "",
   exportProjectIds: [],
@@ -131,6 +134,18 @@ export class InlineTasksSettingTab extends PluginSettingTab {
           s.tasksFields = v;
           await this.plugin.saveAll();
           if (v) void this.plugin.runPull(); // a full sync writes the priorities
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Only lines with Tasks' global filter")
+      .setDesc(
+        "If you've set a global filter in the Tasks plugin, such as #task, only checkboxes that have it become Todoist tasks, as only those are tasks to Tasks. Lines already synced keep syncing. Either way, the global filter is kept out of Todoist titles and added to lines the plugin writes.",
+      )
+      .addToggle((t) =>
+        t.setValue(s.onlyTasksGlobalFilter).onChange(async (v) => {
+          s.onlyTasksGlobalFilter = v;
+          await this.plugin.saveAll();
         }),
       );
 

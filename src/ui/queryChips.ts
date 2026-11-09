@@ -7,6 +7,8 @@
  * chip if exactly one Todoist task matches.
  */
 
+import { withoutGlobalFilter } from "../parse/taskLine";
+
 const MARKER_RE = /%%td:([A-Za-z0-9_-]+)%%/;
 const RESULTS = ".plugin-tasks-query-result";
 const RESULT_ITEM = `${RESULTS} li.task-list-item`;
@@ -23,7 +25,7 @@ export interface TasksCacheTask {
 
 /** Rendered markdown and its source, reduced to text that compares equal. */
 function comparable(s: string): string {
-  return s
+  return withoutGlobalFilter(s) // which Tasks may hide
     .replace(/#[^\s#]+/g, "") // tags (and Tasks' global filter, which it may hide)
     .replace(/[*_`~=]/g, "")
     .replace(/\s+/g, " ")

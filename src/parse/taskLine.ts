@@ -78,6 +78,13 @@ export interface ParsedTask extends TaskFields {
   fields?: TasksFields;
   /** A block link at the end of the line (`^abc`), without the `^`, or null. */
   blockLink?: string | null;
+  /** Whether the line has the Tasks plugin's global filter, which makes it a task to Tasks. */
+  hasGlobalFilter?: boolean;
+  /**
+   * Where the global filter was, as a word of its own, when it was taken out of the content and
+   * text (and so the Todoist title): before the text, or after it. Written back there.
+   */
+  globalFilterAt?: "start" | "end";
 }
 
 /** Tasks-plugin fields other than the due date. Values as Tasks writes them, after the emoji. */
@@ -131,6 +138,34 @@ let closedStatuses = new Set(DEFAULT_STATUSES.closed);
 let cancelledStatuses = new Set(DEFAULT_STATUSES.cancelled);
 /** Statuses an unsynced line can start a Todoist task from: to do, and in progress. */
 let openStatuses = new Set(DEFAULT_STATUSES.open);
+
+/** The Tasks plugin's global filter, such as `#task`, or "" for none. */
+let globalFilter = "";
+/** Only lines with the global filter start Todoist tasks. */
+let onlyGlobalFilter = false;
+
+/**
+ * Use the Tasks plugin's global filter: it's kept out of Todoist titles and put on lines the plugin
+ * writes, and with `only`, lines without it don't become Todoist tasks. Null: none.
+ */
+export function setTasksGlobalFilter(filter: string | null | undefined, only = false): void {
+  globalFilter = typeof filter === "string" ? filter.trim() : "";
+  onlyGlobalFilter = only;
+}
+
+/** The Tasks plugin's global filter, or "" for none. */
+export function tasksGlobalFilter(): string {
+  return globalFilter;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+/** The global filter as a word of its own, as Tasks removes it. */
+const globalFilterRe = () => new RegExp(`(^|\\s)${escapeRe(globalFilter)}(?=\\s|$)`, "gu");
+
+/** Text without the global filter where it's a word of its own, as Tasks shows it with "remove global filter" on. */
+export function withoutGlobalFilter(s: string): string {
+  return globalFilter ? normalize(s.replace(globalFilterRe(), "$1")) : s;
+}
 
 /** A status as the Tasks plugin's settings define it. */
 export interface TasksStatus {
@@ -198,7 +233,8 @@ export function isCancelledStatus(status: string): boolean {
 }
 
 /** Whether an unsynced line with this status, and not opted out, becomes a Todoist task. */
-export function createsTask(task: Pick<ParsedTask, "status" | "excluded" | "todoistId" | "pendingUuid">): boolean {
+export function createsTask(task: Pick<ParsedTask, "status" | "excluded" | "todoistId" | "pendingUuid" | "hasGlobalFilter">): boolean {
+  if (onlyGlobalFilter && globalFilter && !task.hasGlobalFilter) return false;
   return !task.excluded && !task.todoistId && !task.pendingUuid && openStatuses.has(task.status);
 }
 
@@ -258,6 +294,16 @@ export function parseTaskLine(line: string): ParsedTask | null {
   let content = normalize(s);
   const block = BLOCK_LINK_RE.exec(content);
   if (block) content = content.slice(0, block.index).trimEnd();
+  // Tasks counts a line with the global filter anywhere, and hides it only where it's a word.
+  const hasGlobalFilter = !!globalFilter && rest.includes(globalFilter);
+  let globalFilterAt: "start" | "end" | undefined;
+  if (hasGlobalFilter) {
+    const at = content.search(globalFilterRe());
+    if (at >= 0) {
+      globalFilterAt = at === 0 ? "start" : "end";
+      content = withoutGlobalFilter(content);
+    }
+  }
   const refs = readRefs(content);
   return {
     prefix,
@@ -269,6 +315,8 @@ export function parseTaskLine(line: string): ParsedTask | null {
     deadline,
     fields,
     blockLink: block ? block[1] : null,
+    ...(globalFilter ? { hasGlobalFilter } : {}),
+    ...(globalFilterAt ? { globalFilterAt } : {}),
     todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
     pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
     excluded: isExcluded(refs.text),
@@ -337,7 +385,9 @@ export function markerFor(task: Pick<ParsedTask, "todoistId" | "pendingUuid">): 
 export function serializeTask(task: ParsedTask): string {
   const closed = isClosedStatus(task.status);
   const status = task.checked ? (closed ? task.status : "x") : closed ? " " : task.status;
-  let out = `${task.prefix}[${status}] ${task.text}`;
+  const gf = task.globalFilterAt && globalFilter;
+  const text = !gf ? task.text : task.globalFilterAt === "start" ? `${gf} ${task.text}` : `${task.text} ${gf}`;
+  let out = `${task.prefix}[${status}] ${text.trim()}`;
   if (task.priorityRef) out += ` p${task.priorityRef}`;
   if (task.dueRef) out += ` ${task.dueRef}`;
   for (const l of task.labelRefs) out += ` ${labelRef(l)}`;

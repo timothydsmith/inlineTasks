@@ -1,4 +1,4 @@
-import { blockEnd, parseTaskLine, serializeTask, withLinePriority, type TasksFields } from "../parse/taskLine";
+import { blockEnd, parseTaskLine, serializeTask, tasksGlobalFilter, withLinePriority, type TasksFields } from "../parse/taskLine";
 import { canonicalRule } from "./recurrence";
 import { dueDate, type TodoistItem } from "../todoist/client";
 import { childLines, compareSiblings } from "./order";
@@ -95,7 +95,7 @@ function importedFields(item: TodoistItem): TasksFields {
 
 /**
  * One task as a checkbox line: its title, marker, date and deadline, and with `tasksFields` its
- * Tasks priority and repeat.
+ * Tasks priority and repeat. With a Tasks global filter, it goes before the title, as Tasks puts it.
  */
 export function taskLine(item: TodoistItem, indent: string, tasksFields = false): string {
   return serializeTask({
@@ -114,5 +114,6 @@ export function taskLine(item: TodoistItem, indent: string, tasksFields = false)
     dueRef: null,
     deadline: item.deadline?.date ?? null,
     fields: tasksFields ? importedFields(item) : undefined,
+    ...(tasksGlobalFilter() ? { hasGlobalFilter: true, globalFilterAt: "start" as const } : {}),
   });
 }

@@ -21,6 +21,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - **Export tasks to JSON** command: writes the open and completed tasks in projects you pick (archived ones and the Inbox included), their completions and deletions from Todoist's activity log, and the lines each task is linked to in your notes, with what the export covers.
 - The same Todoist task can be on lines in several notes, or several times in one: copy a synced line, marker and all. Every line syncs both ways, and a change on one reaches the others. The note it was created or first linked in is its home, which decides its nesting; the chip on a copy shows a house that opens the home note.
 - Tasks plugin query results show each task's chip after its text.
+- The Tasks plugin's global filter, such as `#task`, is kept out of Todoist titles and added to lines the plugin writes. The **Only lines with Tasks' global filter** setting makes Todoist tasks only from lines that have it.
 - `filter by function !inlineTasks.isCopy(task)` in a Tasks query lists each task once, at its home, leaving out its copies.
 - Nested projects: `#[Work/Clients/Acme]` files a task in Acme, under Clients, under Work, creating any of them that doesn't exist. The project menus match paths, offer to create nested projects, and name a project by its path when another has the same name.
 

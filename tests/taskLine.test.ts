@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createsTask, findTasks, isCancelledStatus, setTasksStatuses, needsRelayout, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
+import { createsTask, findTasks, isCancelledStatus, setTasksGlobalFilter, setTasksStatuses, needsRelayout, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -322,5 +322,47 @@ describe("Tasks plugin statuses", () => {
     expect(line("d").checked).toBe(false);
     expect(createsTask(line("d"))).toBe(false);
     expect(createsTask(line("/"))).toBe(true);
+  });
+});
+
+describe("Tasks' global filter", () => {
+  afterEach(() => setTasksGlobalFilter(null));
+
+  it("keeps it out of the text, and writes it back where it was", () => {
+    setTasksGlobalFilter("#task");
+    const start = parseTaskLine("- [ ] #task Buy milk %%td:T1%% ⏳ 2026-11-10")!;
+    expect(start).toMatchObject({ text: "Buy milk", hasGlobalFilter: true, globalFilterAt: "start" });
+    expect(serializeTask({ ...start, text: "Buy bread" })).toBe("- [ ] #task Buy bread %%td:T1%% ⏳ 2026-11-10");
+    const end = parseTaskLine("- [ ] Buy milk #task p2")!;
+    expect(end).toMatchObject({ text: "Buy milk", priorityRef: 2, globalFilterAt: "end" });
+    expect(serializeTask({ ...end, priorityRef: null })).toBe("- [ ] Buy milk #task");
+  });
+
+  it("counts it inside a word, as Tasks does, but leaves it in the text there", () => {
+    setTasksGlobalFilter("#task");
+    const t = parseTaskLine("- [ ] Sort #tasks")!;
+    expect(t).toMatchObject({ text: "Sort #tasks", hasGlobalFilter: true });
+    expect(t.globalFilterAt).toBeUndefined();
+  });
+
+  it("treats a line with only the filter as empty", () => {
+    setTasksGlobalFilter("#task");
+    expect(parseTaskLine("- [ ] #task")!.excluded).toBe(true);
+  });
+
+  it("with only, makes tasks from lines with the filter alone", () => {
+    setTasksGlobalFilter("#task", true);
+    expect(createsTask(parseTaskLine("- [ ] Buy milk")!)).toBe(false);
+    expect(createsTask(parseTaskLine("- [ ] #task Buy milk")!)).toBe(true);
+    setTasksGlobalFilter("#task", false);
+    expect(createsTask(parseTaskLine("- [ ] Buy milk")!)).toBe(true);
+    setTasksGlobalFilter(null, true);
+    expect(createsTask(parseTaskLine("- [ ] Buy milk")!)).toBe(true);
+  });
+
+  it("handles a filter that isn't a tag", () => {
+    setTasksGlobalFilter("TODO");
+    const t = parseTaskLine("- [ ] TODO call (Bob)")!;
+    expect(t).toMatchObject({ text: "call (Bob)", globalFilterAt: "start" });
   });
 });

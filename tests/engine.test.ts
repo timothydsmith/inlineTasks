@@ -1,8 +1,8 @@
 import { generateKeyBetween } from "fractional-indexing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GONE_GRACE_MS, SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { blockEnd, setTasksStatuses, withProjectRef, withRef } from "../src/parse/taskLine";
-import { importLines, withMissingSubtasks } from "../src/sync/importTask";
+import { blockEnd, setTasksGlobalFilter, setTasksStatuses, withProjectRef, withRef } from "../src/parse/taskLine";
+import { importLines, taskLine, withMissingSubtasks } from "../src/sync/importTask";
 import { isoDate } from "../src/sync/dates";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
 import { TodoistClient, type Command, type HttpRequest, type TodoistItem } from "../src/todoist/client";
@@ -1350,6 +1350,52 @@ describe("SyncEngine", () => {
       vault.files.set("Daily.md", "- [ ] A %%td:X1%%");
       expect(await engine.linkExisting()).toBe(1);
       expect(state.tasks.X1).toMatchObject({ path: "Home.md", copies: ["Daily.md"] });
+    });
+  });
+
+  describe("Tasks' global filter", () => {
+    afterEach(() => setTasksGlobalFilter(null));
+
+    it("keeps the filter out of the Todoist title and on the line", async () => {
+      setTasksGlobalFilter("#task");
+      vault.files.set("Note.md", "- [ ] #task Buy milk");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(todoist.items.get("T1")!.content).toBe("Buy milk");
+      expect(vault.files.get("Note.md")).toBe("- [ ] #task Buy milk %%td:T1%%");
+      todoist.edit("T1", { content: "Buy bread" });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] #task Buy bread %%td:T1%%");
+    });
+
+    it("drops the filter from the title of a task synced before it was known", async () => {
+      vault.files.set("Note.md", "- [ ] #task Buy milk");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(todoist.items.get("T1")!.content).toBe("#task Buy milk");
+      setTasksGlobalFilter("#task");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.content).toBe("Buy milk");
+      expect(vault.files.get("Note.md")).toBe("- [ ] #task Buy milk %%td:T1%%");
+    });
+
+    it("with only, makes tasks from lines with the filter alone, and keeps syncing linked ones", async () => {
+      vault.files.set("Note.md", "- [ ] Linked");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      setTasksGlobalFilter("#task", true);
+      vault.files.set("Note.md", "- [x] Linked %%td:T1%%\n- [ ] Just a checkbox\n- [ ] #task A task");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(todoist.items.get("T1")!.checked).toBe(true);
+      expect([...todoist.items.values()].map((i) => i.content).sort()).toEqual(["A task", "Linked"]);
+      expect(vault.files.get("Note.md")).toBe("- [x] Linked %%td:T1%%\n- [ ] Just a checkbox\n- [ ] #task A task %%td:T2%%");
+    });
+
+    it("puts the filter on imported lines", () => {
+      setTasksGlobalFilter("#task");
+      const item = { id: "X1", content: "Call Bob", description: "", project_id: "inbox", checked: false, is_deleted: false, priority: 1, due: null } as TodoistItem;
+      expect(taskLine(item, "")).toBe("- [ ] #task Call Bob %%td:X1%%");
     });
   });
 
