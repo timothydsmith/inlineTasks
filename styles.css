@@ -41,6 +41,11 @@
 .inline-tasks-chip.is-orphaned .inline-tasks-icon { background: var(--text-faint); }
 .inline-tasks-chip.is-done .inline-tasks-icon { background: var(--text-faint); }
 .inline-tasks-backfill-list { max-height: 14em; overflow-y: auto; }
+.inline-tasks-export-tools { display: flex; gap: 0.5em; margin-bottom: 0.5em; }
+.inline-tasks-export-list { max-height: 50vh; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); padding: 0.25em 0.5em; }
+.inline-tasks-export-row { display: flex; align-items: center; gap: 0.5em; padding-top: 0.15em; padding-bottom: 0.15em; }
+.inline-tasks-export-row input[type="checkbox"] { margin: 0; }
+.inline-tasks-export-note { color: var(--text-muted); font-size: var(--font-smallest); }
 .inline-tasks-suggest-path { color: var(--text-muted); font-size: var(--font-smallest); }
 .inline-tasks-suggest-create { color: var(--text-accent); }
 .inline-tasks-label-choice { display: flex; align-items: center; gap: 0.5em; }

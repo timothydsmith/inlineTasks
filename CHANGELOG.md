@@ -18,6 +18,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - **Projects and labels note** setting, off by default. When on, the plugin keeps a note listing your Todoist projects and labels, how to write a line that files a task in them, and your folder mappings and excluded folders, so agents and scripts can add tasks to your notes without a Todoist connection of their own. It's rewritten whenever a sync changes it. It goes in the vault's config folder (`.obsidian/todoist-projects-and-labels.md`) unless you set another location.
 
 - Deadlines sync both ways as `📅`, the Tasks plugin's due date. The chip shows a task's deadline after a ◎.
+- **Export tasks to JSON** command: writes the open and completed tasks in projects you pick (archived ones and the Inbox included), their completions and deletions from Todoist's activity log, and the lines each task is linked to in your notes, with what the export covers.
 - Nested projects: `#[Work/Clients/Acme]` files a task in Acme, under Clients, under Work, creating any of them that doesn't exist. The project menus match paths, offer to create nested projects, and name a project by its path when another has the same name.
 
 ### Changed

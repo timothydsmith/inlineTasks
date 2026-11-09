@@ -293,6 +293,20 @@ It's rewritten whenever a sync brings a change, so it follows projects and label
 - **In the config folder:** the note stays out of Obsidian's file list, search and graph, but also out of reach of agents that read the vault through Obsidian (such as one using a REST API plugin), and of search tools that skip hidden folders by default. Give the agent its path, for example in its instructions file.
 - **Each device writes it:** with the setting on and the note in a synced folder, every device writes the same text, and only when it changes.
 
+### Exporting tasks
+**Export tasks to JSON** writes a snapshot of your Todoist tasks to a file, for reconciling them with your notes (by hand or with an agent). Pick the projects to include, active or archived, including the Inbox. Ticking a project ticks its subprojects too. Your picks are remembered for next time.
+
+The file, `Todoist export 2026-11-09 1310.json` at the vault's root, has:
+
+- **Every open task** in those projects as at the export: subtasks, undated, overdue and recurring tasks included.
+- **Every completed task** in them since your Todoist account was made, from Todoist's completed-tasks archive.
+- **Events** from Todoist's activity log: completions (including each completion of a recurring task), reopenings and deletions, as far back as your plan keeps them. Deleted tasks can only be found here.
+- **For each task:** its id, exact title, project with its full path, section, parent task, labels, priority, date (with time, timezone and repeat), deadline, duration, description, created, updated and completed times, and its Todoist link.
+- **Where it's linked in your notes:** each line with its `%%td:…%%` marker, with the note's path, line number, `^block` id, checkbox status, and the line's `⏳`, `➕`, `🛫`, `📅`, `✅`, `❌` and `🔁` values (null when the line has none), plus whether this device's sync state links it.
+- **What it covers:** the export time in UTC and in your Todoist timezone, the projects included, the dates the history covers, and any part that couldn't be fetched. A task missing from the file isn't evidence it was completed.
+
+It reads a lot of history, so it can take a minute. Todoist has no cancelled state: a checkbox cancelled with `[-]` completes the Todoist task, and the export shows the line as cancelled.
+
 ## Install
 
 Needs Obsidian 1.8.7 or later, on desktop or mobile.
@@ -339,6 +353,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | **Add missing subtasks from Todoist** | On a synced task's line: adds its open subtasks that aren't in a note yet beneath it. Same as clicking the `↳` count on its chip. |
 | **Review backfill of existing checkboxes** | Shows how many unsynced open checkboxes would be created, and creates them on confirm. |
 | **Save sync log to a note** | Writes this device's recent sync decisions to `Inline Tasks sync log (desktop).md` (or `android`, `ios`), so you can compare what each device did. |
+| **Export tasks to JSON** | Writes the open and completed tasks in projects you pick, with their history and links to notes, to a JSON file. See [Exporting tasks](#exporting-tasks). |
 
 ## Privacy
 

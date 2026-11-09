@@ -2,6 +2,8 @@ import { EditorView } from "@codemirror/view";
 import { Editor, editorInfoField, MarkdownView, normalizePath, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { CATALOG_FILE, catalogNote } from "./sync/catalog";
+import { buildExport, exportFileName, fetchHistory, fetchSnapshot, linkedLines, type ObsidianLine, type Snapshot } from "./sync/export";
+import { ExportModal } from "./ui/exportModal";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
 import { blockEnd, findLineByMarker, parseTaskLine, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
@@ -43,6 +45,7 @@ export default class InlineTasksPlugin extends Plugin {
   settings: InlineTasksSettings = { ...DEFAULT_SETTINGS };
   state: SyncState = emptyState();
   engine!: SyncEngine;
+  private client!: TodoistClient;
 
   private dirty = new Set<string>();
   /** Notes with a label picker open from a typed `@`: not pushed until it closes, so the `@` never reaches a title. */
@@ -88,8 +91,9 @@ export default class InlineTasksPlugin extends Plugin {
       return { status: res.status, json };
     };
 
+    this.client = new TodoistClient(() => this.settings.apiToken, http);
     this.engine = new SyncEngine(
-      new TodoistClient(() => this.settings.apiToken, http),
+      this.client,
       this.vaultAdapter(),
       this.state,
       () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit() }),
@@ -172,6 +176,7 @@ export default class InlineTasksPlugin extends Plugin {
     });
     this.addCommand({ id: "backfill", name: "Review backfill of existing checkboxes", callback: () => this.openBackfill() });
     this.addCommand({ id: "save-log", name: "Save sync log to a note", callback: () => this.saveLog() });
+    this.addCommand({ id: "export-tasks", name: "Export tasks to JSON", callback: () => void this.exportTasks() });
 
     this.app.workspace.onLayoutReady(async () => {
       // Registered here because Obsidian fires `create` for every file while the vault loads.
@@ -580,6 +585,66 @@ export default class InlineTasksPlugin extends Plugin {
     if (existing instanceof TFile) await this.app.vault.modify(existing, body);
     else await this.app.vault.create(path, body);
     new Notice(`Saved ${path}`);
+  }
+
+  // ------------------------------------------------------------ export
+
+  /** Fetch the project list, then let the user pick which projects to export. */
+  private async exportTasks(): Promise<void> {
+    if (!this.settings.apiToken) {
+      new Notice("Add your Todoist API token in settings first");
+      return;
+    }
+    const notice = new Notice("Todoist export: fetching projects…", 0);
+    const snap = await this.guard(() => fetchSnapshot(this.client), true);
+    notice.hide();
+    if (!snap) return;
+    new ExportModal(this.app, snap.projects, this.settings.exportProjectIds, (selected) => void this.runExport(snap, selected)).open();
+  }
+
+  /** Fetch the history for the projects picked, read the links from the vault, and write the file. */
+  private async runExport(snap: Snapshot, selected: Set<string>): Promise<void> {
+    this.settings.exportProjectIds = [...selected];
+    await this.saveAll();
+    const notice = new Notice("Todoist export: starting…", 0);
+    try {
+      const hist = await fetchHistory(this.client, snap, selected, (msg) => notice.setMessage(`Todoist export: ${msg}…`));
+      notice.setMessage("Todoist export: reading notes…");
+      const links = new Map<string, ObsidianLine[]>();
+      for (const f of this.app.vault.getMarkdownFiles()) {
+        for (const [id, lines] of linkedLines(f.path, await this.app.vault.cachedRead(f))) links.set(id, [...(links.get(id) ?? []), ...lines]);
+      }
+      const doc = buildExport(snap, hist, selected, links, this.state, {
+        pluginVersion: this.manifest.version,
+        device: this.deviceName,
+        vault: this.app.vault.getName(),
+        deviceTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+      });
+      const path = await this.writeNewFile(exportFileName(snap.fetchedAt, snap.timezone), JSON.stringify(doc, null, 2));
+      notice.hide();
+      const problems = doc.coverage.problems.length;
+      this.log(`exported ${doc.counts.open} open and ${doc.counts.completed} completed task(s), ${doc.counts.events} event(s), to ${path}; ${problems} problem(s)`);
+      for (const p of doc.coverage.problems) this.log(`export problem: ${p}`);
+      new Notice(
+        `Exported ${doc.counts.open} open and ${doc.counts.completed} completed tasks to ${path}` +
+          (problems ? `. ${problems} part${problems === 1 ? "" : "s"} couldn't be fetched: see coverage.problems in the file.` : ""),
+        problems ? 0 : 10_000,
+      );
+    } catch (e) {
+      notice.hide();
+      console.error("[inline-tasks]", e);
+      this.log(`error: export failed: ${(e as Error).message}`);
+      new Notice(`Todoist export failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Create a file at the vault's root, adding " (2)", " (3)"… to the name if it's taken. */
+  private async writeNewFile(name: string, body: string): Promise<string> {
+    const dot = name.lastIndexOf(".");
+    let path = name;
+    for (let n = 2; this.app.vault.getAbstractFileByPath(path); n++) path = `${name.slice(0, dot)} (${n})${name.slice(dot)}`;
+    await this.app.vault.create(path, body);
+    return path;
   }
 
   // ------------------------------------------------------------ scheduling

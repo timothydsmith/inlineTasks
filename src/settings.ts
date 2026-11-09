@@ -14,6 +14,8 @@ export interface InlineTasksSettings {
   catalogNote: boolean;
   /** Where that note goes. Empty: `todoist-projects-and-labels.md` in the vault's config folder. */
   catalogNotePath: string;
+  /** The projects last picked for **Export tasks to JSON**, ticked the next time. */
+  exportProjectIds: string[];
 }
 
 export type ImportSubtasks = "ask" | "always" | "never";
@@ -27,6 +29,7 @@ export const DEFAULT_SETTINGS: InlineTasksSettings = {
   tasksFields: false,
   catalogNote: false,
   catalogNotePath: "",
+  exportProjectIds: [],
 };
 
 export class InlineTasksSettingTab extends PluginSettingTab {
