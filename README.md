@@ -239,6 +239,16 @@ Copy a synced line, marker and all, into another note (or elsewhere in the same 
 - **The chip on a copy** shows a house instead of the red square. Click the house to open the home note at the task's line.
 - **References** typed on a copy, such as `#[Project]` or `@label`, work on the first line of the task in each note.
 - **Deleting a line** only unlinks that line. Deleting the home line makes another copy the home; the task is unlinked once its last line is gone. Moving the home line to another note moves its home there.
+- **In Tasks queries,** every line shows. To list each task once, at its home, add this line to the query:
+
+  ````markdown
+  ```tasks
+  not done
+  filter by function !inlineTasks.isCopy(task)
+  ```
+  ````
+
+  `isCopy` is true for a line in another note than its task's home, or after the task's first line in the home note. Lines without a marker always show. Tasks runs JavaScript in queries only once it's turned on in Tasks' settings; read Tasks' page on [JavaScript in Tasks Queries](https://publish.obsidian.md/tasks/Scripting/JavaScript+in+Tasks+Queries) first.
 - **Changed on two lines at once,** before either synced: for each field, the note edited most recently wins.
 
 ### Subtasks
