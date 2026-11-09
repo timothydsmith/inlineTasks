@@ -1,7 +1,6 @@
 import { App, SuggestModal } from "obsidian";
-import { projectKey } from "../sync/engine";
 import type { SyncState } from "../sync/state";
-import { projectChoices, renderProjectChoice, type ProjectChoice } from "./projectSuggest";
+import { createChoice, projectChoices, renderCreateChoice, renderProjectChoice, type ProjectChoice } from "./projectSuggest";
 
 type Choice = ProjectChoice | { kind: "create"; name: string };
 
@@ -29,17 +28,15 @@ export class ProjectModal extends SuggestModal<Choice> {
   getSuggestions(query: string): Choice[] {
     const q = query.trim();
     const out: Choice[] = projectChoices(this.state, q);
-    // `]` would end a `#[Project]` reference, so a name with one can't be created this way.
-    if (q && !q.includes("]") && !out.some((c) => c.kind === "project" && projectKey(c.name) === projectKey(q))) {
-      out.push({ kind: "create", name: q });
-    }
+    const create = createChoice(this.state, q); // `Work/Clients/Acme` creates nested projects
+    if (create) out.push(create);
     return out;
   }
 
   renderSuggestion(choice: Choice, el: HTMLElement): void {
     el.addClass("inline-tasks-suggest");
     if (choice.kind === "create") {
-      el.createDiv({ text: `Create project “${choice.name}”`, cls: "inline-tasks-suggest-create" });
+      renderCreateChoice(this.state, choice.name, el);
       return;
     }
     renderProjectChoice(choice, el, choice.id === this.currentId ? "Current" : undefined);

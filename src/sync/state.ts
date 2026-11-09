@@ -25,6 +25,8 @@ export interface RemoteMeta {
   projectId: string;
   priority: number;
   due: string | null;
+  /** The deadline, YYYY-MM-DD. Undefined in details saved before deadlines were tracked. */
+  deadline?: string | null;
   dueString?: string;
   recurring?: boolean;
   checked: boolean;
@@ -79,6 +81,13 @@ export interface SyncState {
    * fields** setting was turned on. An incremental sync only returns tasks that changed.
    */
   tasksFieldsSynced?: boolean;
+  /**
+   * True once this device has rewritten lines from before deadlines synced, whose `📅` was the
+   * Todoist date, to write it as `⏳` (see SyncEngine.migrateVault).
+   */
+  datesMigrated?: boolean;
+  /** True once a full sync has brought every task's deadline to its line, after that rewrite. */
+  deadlinesSynced?: boolean;
 }
 
 export interface ProjectInfo {

@@ -5,6 +5,7 @@ import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
 import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withRef } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
+import { projectRef } from "./sync/projects";
 import { emptyState, subtaskCount, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
@@ -178,12 +179,12 @@ export default class InlineTasksPlugin extends Plugin {
         const n = await this.engine.linkExisting();
         this.log(`no sync state on this device; linked ${n} existing task(s)`);
       }
-      if (!this.state.relaidOut) {
-        // Lines written before 0.4.0 have the marker last, which hides their fields from Tasks.
+      if (!this.state.relaidOut || !this.state.datesMigrated) {
+        // Lines from earlier versions: the marker after the fields, or the Todoist date as `📅`.
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         const skip = view?.file && view.getMode() === "source" ? { path: view.file.path, line: view.editor.getCursor().line } : undefined;
-        const n = await this.guard(() => this.engine.relayoutVault(skip));
-        if (n) this.log(`moved the marker before the fields on ${n} line(s)`);
+        const n = await this.guard(() => this.engine.migrateVault(skip));
+        if (n) this.log(`rewrote ${n} line(s) from an earlier version`);
       }
       if (this.settings.apiToken) {
         await this.runPull();
@@ -436,16 +437,14 @@ export default class InlineTasksPlugin extends Plugin {
     const rec = this.state.tasks[id];
     if (!rec || rec.orphaned || !this.settings.apiToken) return;
     new ProjectModal(this.app, this.state, this.state.remote[id]?.projectId, (name, chosen) => {
-      // The move goes through a `#[Name]` reference, which can't hold a `]` or tell same-named projects apart.
-      if (name.includes("]")) {
-        new Notice(`Can't move a task to “${name}” from here, because of the ]. Use Todoist instead.`);
+      // The move goes through a `#[Name]` reference: a project sharing its name with another is
+      // named by its path, `Work/Clients`. One whose name has a `]` or `/` may not be nameable.
+      const ref = chosen ? projectRef(this.state, chosen) : name;
+      if (!ref) {
+        new Notice(`Can't move a task to “${name}” from here, because no reference names only it. Use Todoist instead.`);
         return;
       }
-      if (chosen && this.engine.findProject(name) !== chosen) {
-        new Notice(`More than one project is called “${name}”, so it can't be picked from here. Use Todoist instead.`);
-        return;
-      }
-      void this.guard(() => this.addRefAndPush(id, `#[${name}]`, `moving ${id} to project "${name}"`), true);
+      void this.guard(() => this.addRefAndPush(id, `#[${ref}]`, `moving ${id} to project "${ref}"`), true);
     }).open();
   }
 

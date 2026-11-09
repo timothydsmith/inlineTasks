@@ -8,14 +8,19 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 ## [Unreleased]
 
 ### Added
-- Tasks plugin fields stay on the line and out of the Todoist title: `⏳ 🛫 ➕ ✅ ❌` dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔`, `🏁`, and a `^block-link` at the end. Tasks' other spellings of the due date, `📆` and `🗓`, are read as `📅`.
+- Tasks plugin fields stay on the line and out of the Todoist title: `🛫 ➕ ✅ ❌` dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔`, `🏁`, and a `^block-link` at the end. Tasks' other spellings of the due date, `📆` and `🗓`, are read as `📅`.
 - **Write Tasks plugin fields** setting, off by default. When on:
   - Each task's Todoist priority is written on its line as a Tasks priority (🔺 p1, ⏫ p2, 🔼 p3, nothing for p4), and changing either one changes the other.
   - `p1`–`p4` typed on a line, or a priority picked on the chip, becomes the Tasks priority.
   - A task completed in Todoist gets `✅` and the date it was completed, and one ticked in the note gets today's date. Unticking removes the date.
   - Imported tasks come with their priority.
 
+- Deadlines sync both ways as `📅`, the Tasks plugin's due date. The chip shows a task's deadline after a ◎.
+- Nested projects: `#[Work/Clients/Acme]` files a task in Acme, under Clients, under Work, creating any of them that doesn't exist. The project menus match paths, offer to create nested projects, and name a project by its path when another has the same name.
+
 ### Changed
+- The Todoist date is written as `⏳`, the Tasks plugin's scheduled date, instead of `📅`, which is now the deadline. Each device rewrites existing lines once, the first time it starts this version.
+- The chip's project picker can move a task to a project that shares its name with another, naming it by its path.
 - The `%%td:…%%` marker goes after the task's text and before its dates and other fields, so the Tasks plugin can read them. Each device moves the marker on existing lines once, the first time it starts this version.
 - Only `[x]`, `[X]` and `[-]` (cancelled) complete the Todoist task. Other statuses, such as Tasks' `[/]` (in progress), leave it open and are kept on the line. New tasks are made from `[ ]` and `[/]` lines only.
 

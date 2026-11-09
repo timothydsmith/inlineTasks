@@ -55,7 +55,14 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     }
     if (meta.due) {
       const s = add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
-      s.title = "Click to change its due date";
+      s.title = "Click to change its date";
+    }
+    if (meta.deadline) {
+      // Opens the task in Todoist, like the rest of the chip; the line's `📅` is where to change it.
+      const s = add(`inline-tasks-deadline${isOverdue(meta.deadline) && !meta.checked ? " is-overdue" : ""}`, "");
+      setIcon(s.createSpan(), "target");
+      s.createSpan({ text: formatDue(meta.deadline) });
+      s.title = `Deadline: ${meta.deadline}`;
     }
     const p = PRIORITY_CLASS[meta.priority];
     if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase()).title = "Click to change its priority";

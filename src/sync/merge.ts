@@ -1,7 +1,7 @@
 import type { TaskFields } from "../parse/taskLine";
 
 export type Field = keyof TaskFields;
-const FIELDS: Field[] = ["text", "checked", "due", "priority"];
+const FIELDS: Field[] = ["text", "checked", "due", "deadline", "priority"];
 
 export interface MergeResult {
   /** Fields whose local value should be pushed to Todoist. */
@@ -39,9 +39,11 @@ export function merge(
     // Priority is merged only when both sides give it (the Tasks fields setting is on). A base from
     // before then has none: the line had no Tasks priority to sync, which is p4.
     if (f === "priority" && (local.priority === undefined || remote.priority === undefined)) continue;
+    // The deadline likewise, once the line has it as `📅` (see SyncEngine.readLine). None before then.
+    if (f === "deadline" && (local.deadline === undefined || remote.deadline === undefined)) continue;
     const l = local[f];
     const r = remote[f];
-    const b = f === "priority" ? (base.priority ?? 4) : base[f];
+    const b = f === "priority" ? (base.priority ?? 4) : f === "deadline" ? (base.deadline ?? null) : base[f];
     const localChanged = l !== b;
     const remoteChanged = r !== b;
 

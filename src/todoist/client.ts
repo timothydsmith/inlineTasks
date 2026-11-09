@@ -28,6 +28,8 @@ export interface TodoistItem {
   is_deleted: boolean;
   priority: number; // 1 (normal) .. 4 (urgent)
   due: TodoistDue | null;
+  /** The deadline: when it must be done, a date without a time. */
+  deadline?: { date: string; lang?: string } | null;
   labels?: string[];
   /** The parent task's id, for a subtask. */
   parent_id?: string | null;

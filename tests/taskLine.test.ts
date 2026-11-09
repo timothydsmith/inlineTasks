@@ -8,7 +8,7 @@ describe("parseTaskLine", () => {
   });
 
   it("parses marker, due date and checked state", () => {
-    const t = parseTaskLine("  * [x] Call Bob %%td:6Xg4Qm2pR%% 📅 2026-11-10")!;
+    const t = parseTaskLine("  * [x] Call Bob %%td:6Xg4Qm2pR%% ⏳ 2026-11-10")!;
     expect(t).toMatchObject({ prefix: "  * ", text: "Call Bob", checked: true, due: "2026-11-10", todoistId: "6Xg4Qm2pR" });
   });
 
@@ -29,7 +29,7 @@ describe("parseTaskLine", () => {
   });
 
   it("extracts #[Project] references from the text", () => {
-    const t = parseTaskLine("- [ ] Send #[Old] invoice #[Home Reno] 📅 2026-11-10 #urgent")!;
+    const t = parseTaskLine("- [ ] Send #[Old] invoice #[Home Reno] ⏳ 2026-11-10 #urgent")!;
     expect(t.projectRef).toBe("Home Reno"); // last one wins
     expect(t.text).toBe("Send invoice #urgent"); // ordinary tags stay
     expect(parseTaskLine("- [ ] Plain #tag")!.projectRef).toBeNull();
@@ -49,7 +49,7 @@ describe("parseTaskLine", () => {
   });
 
   it("extracts a p1–p4 priority from the text", () => {
-    const t = parseTaskLine("- [ ] Plan p2 roadmap P1 📅 2026-11-10")!;
+    const t = parseTaskLine("- [ ] Plan p2 roadmap P1 ⏳ 2026-11-10")!;
     expect(t.priorityRef).toBe(1); // last one wins, either case
     expect(t.text).toBe("Plan roadmap");
     for (const line of ["- [ ] Review mp3 files", "- [ ] Use #p1 tag", "- [ ] Win p1st", "- [ ] Try p5", "- [ ] Ref (p1)"]) {
@@ -78,7 +78,7 @@ describe("parseTaskLine", () => {
   });
 
   it("reads only what follows a synced title for references", () => {
-    const line = "- [ ] Call Bob today p2 %%td:abc%% 📅 2026-11-10";
+    const line = "- [ ] Call Bob today p2 %%td:abc%% ⏳ 2026-11-10";
     const plain = parseTaskLine(line)!;
     expect([plain.text, plain.dueRef, plain.priorityRef]).toEqual(["Call Bob", "today", 2]);
     expect(plain.content).toBe("Call Bob today p2");
@@ -108,31 +108,31 @@ describe("parseTaskLine", () => {
 
 describe("serializeTask", () => {
   it("round-trips a canonical line", () => {
-    const line = "- [ ] Call Bob %%td:abc123%% 📅 2026-11-10";
+    const line = "- [ ] Call Bob %%td:abc123%% ⏳ 2026-11-10";
     expect(serializeTask(parseTaskLine(line)!)).toBe(line);
   });
 
   it("normalises field order", () => {
-    const t = parseTaskLine("- [ ] %%td:abc%% Call 📅 2026-01-02 Bob")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob %%td:abc%% 📅 2026-01-02");
+    const t = parseTaskLine("- [ ] %%td:abc%% Call ⏳ 2026-01-02 Bob")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob %%td:abc%% ⏳ 2026-01-02");
   });
 
   it("keeps a project reference before the due date and marker", () => {
-    const t = parseTaskLine("- [ ] Call #[Work] Bob %%td:abc%% 📅 2026-11-10")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob #[Work] %%td:abc%% 📅 2026-11-10");
-    expect(serializeTask({ ...t, projectRef: null })).toBe("- [ ] Call Bob %%td:abc%% 📅 2026-11-10");
+    const t = parseTaskLine("- [ ] Call #[Work] Bob %%td:abc%% ⏳ 2026-11-10")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob #[Work] %%td:abc%% ⏳ 2026-11-10");
+    expect(serializeTask({ ...t, projectRef: null })).toBe("- [ ] Call Bob %%td:abc%% ⏳ 2026-11-10");
   });
 
   it("writes labels after the text, bracketing names that need it", () => {
-    const t = parseTaskLine("- [ ] Call @[Waiting For] Bob #[Work] @PhoneCall 📅 2026-11-10")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob @[Waiting For] @PhoneCall #[Work] 📅 2026-11-10");
-    expect(serializeTask({ ...t, labelRefs: ["done."] })).toBe("- [ ] Call Bob @[done.] #[Work] 📅 2026-11-10");
+    const t = parseTaskLine("- [ ] Call @[Waiting For] Bob #[Work] @PhoneCall ⏳ 2026-11-10")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob @[Waiting For] @PhoneCall #[Work] ⏳ 2026-11-10");
+    expect(serializeTask({ ...t, labelRefs: ["done."] })).toBe("- [ ] Call Bob @[done.] #[Work] ⏳ 2026-11-10");
   });
 
   it("writes a priority straight after the text", () => {
-    const t = parseTaskLine("- [ ] Call p2 Bob @PhoneCall %%td:abc%% 📅 2026-11-10")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob p2 @PhoneCall %%td:abc%% 📅 2026-11-10");
-    expect(serializeTask({ ...t, priorityRef: null })).toBe("- [ ] Call Bob @PhoneCall %%td:abc%% 📅 2026-11-10");
+    const t = parseTaskLine("- [ ] Call p2 Bob @PhoneCall %%td:abc%% ⏳ 2026-11-10")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob p2 @PhoneCall %%td:abc%% ⏳ 2026-11-10");
+    expect(serializeTask({ ...t, priorityRef: null })).toBe("- [ ] Call Bob @PhoneCall %%td:abc%% ⏳ 2026-11-10");
   });
 
   it("keeps a status while it still says the same, and ticks and unticks to x and a space", () => {
@@ -183,9 +183,9 @@ describe("findTasks", () => {
 
 describe("withProjectRef", () => {
   it("adds the reference just before the marker, where it's read as a project", () => {
-    const line = "\t- [ ] Call Bob %%td:T1%% 📅 2026-11-10";
+    const line = "\t- [ ] Call Bob %%td:T1%% ⏳ 2026-11-10";
     const out = withProjectRef(line, "Home Reno");
-    expect(out).toBe("\t- [ ] Call Bob #[Home Reno] %%td:T1%% 📅 2026-11-10");
+    expect(out).toBe("\t- [ ] Call Bob #[Home Reno] %%td:T1%% ⏳ 2026-11-10");
     expect(parseTaskLine(out)).toMatchObject({ projectRef: "Home Reno", due: "2026-11-10", todoistId: "T1" });
   });
 
@@ -245,8 +245,8 @@ describe("startsLabel", () => {
 describe("Tasks plugin fields", () => {
   it("keeps Tasks' fields out of the title and writes them after the marker, in Tasks' order", () => {
     const t = parseTaskLine("- [ ] Water plants ⏫ 🔁 every week when done ⏳ 2026-11-08 📅 2026-11-10 ➕ 2026-11-01 🛫 2026-11-07 %%td:abc%%")!;
-    expect(t).toMatchObject({ text: "Water plants", due: "2026-11-10", todoistId: "abc", dueRef: null, priorityRef: null });
-    expect(t.fields).toEqual({ priority: "⏫", recurrence: "every week when done", scheduled: "2026-11-08", created: "2026-11-01", start: "2026-11-07" });
+    expect(t).toMatchObject({ text: "Water plants", due: "2026-11-08", deadline: "2026-11-10", todoistId: "abc", dueRef: null, priorityRef: null });
+    expect(t.fields).toEqual({ priority: "⏫", recurrence: "every week when done", created: "2026-11-01", start: "2026-11-07" });
     expect(serializeTask(t)).toBe(
       "- [ ] Water plants %%td:abc%% ⏫ 🔁 every week when done ➕ 2026-11-01 🛫 2026-11-07 ⏳ 2026-11-08 📅 2026-11-10",
     );
@@ -262,15 +262,15 @@ describe("Tasks plugin fields", () => {
 
   it("reads Tasks' other spellings: variation selectors, 📆 and ⌛", () => {
     const t = parseTaskLine("- [ ] Call ⏫️ ⌛ 2026-11-08 📆 2026-11-10")!;
-    expect(t).toMatchObject({ text: "Call", due: "2026-11-10" });
-    expect(t.fields).toEqual({ priority: "⏫", scheduled: "2026-11-08" });
+    expect(t).toMatchObject({ text: "Call", due: "2026-11-08", deadline: "2026-11-10" });
+    expect(t.fields).toEqual({ priority: "⏫" });
     expect(serializeTask(t)).toBe("- [ ] Call ⏫ ⏳ 2026-11-08 📅 2026-11-10");
   });
 
   it("reads references typed after the fields", () => {
     expect(parseTaskLine("- [ ] Call %%td:a%% 📅 2026-11-10 p1 @PhoneCall")).toMatchObject({
       text: "Call",
-      due: "2026-11-10",
+      deadline: "2026-11-10",
       priorityRef: 1,
       labelRefs: ["PhoneCall"],
     });

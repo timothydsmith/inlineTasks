@@ -2,13 +2,14 @@
  * Pure parsing/serialisation of markdown checkbox lines.
  *
  * Line format:
- *   <indent>- [ ] Task text %%td:6Xg4Qm2pR%% 📅 2026-11-10
+ *   <indent>- [ ] Task text %%td:6Xg4Qm2pR%% ⏳ 2026-11-10 📅 2026-11-14
  *
  * - `%%td:<id>%%`      Todoist task id (Obsidian comment, hidden in reading view).
  *                      `%%td:new-<uuid>%%` marks a task whose creation is in flight. Written after
  *                      the task's text and before its fields: the Tasks plugin reads fields from the
  *                      end of the line and stops at anything it doesn't know, such as the marker.
- * - `📅 YYYY-MM-DD`    optional due date (Tasks-plugin compatible).
+ * - `⏳ YYYY-MM-DD`    the Todoist date: when you plan to do it (Tasks' scheduled date).
+ * - `📅 YYYY-MM-DD`    the Todoist deadline: when it must be done (Tasks' due date).
  * - Tasks-plugin fields (`⏳ 🛫 ➕ ✅ ❌` dates, `🔁` repeats, `🔺 ⏫ 🔼 🔽 ⏬` priorities,
  *                      `🆔 ⛔ 🏁`) and a `^block-link` at the end stay on the line, out of the
  *                      Todoist title. Written in the order Tasks writes them.
@@ -24,13 +25,19 @@
  *                      the last one wins. Stripped once applied; the chip shows the priority.
  * - `today`, `friday`, `next week`, `every monday`, `15/11` ...  a due date in words (see
  *                      DUE_WORDS_RE_G). Todoist works out the date; once it's pulled back, the
- *                      words are replaced on the line by `📅 YYYY-MM-DD`.
+ *                      words are replaced on the line by `⏳ YYYY-MM-DD`.
  */
 
 export interface TaskFields {
   text: string;
   checked: boolean;
-  due: string | null; // YYYY-MM-DD
+  /** The Todoist date (`⏳`), YYYY-MM-DD. Todoist's API calls it the due date. */
+  due: string | null;
+  /**
+   * The Todoist deadline (`📅`), YYYY-MM-DD. Missing from a merge base saved before deadlines
+   * synced, whose line still has the date written as `📅` (see SyncEngine.readLine).
+   */
+  deadline?: string | null;
   /**
    * Priority as written (1 = p1, urgent … 4 = none), from the line's Tasks priority. Only tracked
    * when the **Write Tasks plugin fields** setting is on; missing otherwise.
@@ -44,7 +51,7 @@ export interface ParsedTask extends TaskFields {
   /** Raw char inside the brackets (" ", "x", "X", "/", "-", ...). */
   status: string;
   /**
-   * Everything after the checkbox except the marker, the `📅` date, other Tasks fields and a block
+   * Everything after the checkbox except the marker, the `⏳` and `📅` dates, other Tasks fields and a block
    * link: references included, spaces collapsed.
    */
   content: string;
@@ -77,12 +84,11 @@ export interface TasksFields {
   onCompletion?: string;
   created?: string;
   start?: string;
-  scheduled?: string;
   cancelled?: string;
   done?: string;
 }
 
-type FieldKey = keyof TasksFields | "due";
+type FieldKey = keyof TasksFields | "due" | "deadline";
 
 /** Optional variation selector after an emoji. */
 const VS = "\uFE0F?";
@@ -102,8 +108,8 @@ const FIELDS = [
   field("onCompletion", "🏁", "\\s*([Dd]elete|[Kk]eep)", (v) => `🏁 ${v.toLowerCase()}`),
   dateField("created", "➕", "➕"),
   dateField("start", "🛫", "🛫"),
-  dateField("scheduled", "⏳|⌛", "⏳"),
-  dateField("due", "📅|📆|🗓", "📅"),
+  dateField("due", "⏳|⌛", "⏳"),
+  dateField("deadline", "📅|📆|🗓", "📅"),
   dateField("cancelled", "❌", "❌"),
   dateField("done", "✅", "✅"),
 ];
@@ -195,10 +201,12 @@ export function parseTaskLine(line: string): ParsedTask | null {
   // Last one wins, as in Tasks, which reads from the end of the line.
   let s = rest.replace(MARKER_RE_G, " ");
   let due: string | null = null;
+  let deadline: string | null = null;
   const fields: TasksFields = {};
   for (const f of FIELDS) {
     s = s.replace(f.re, (_m, v: string) => {
       if (f.key === "due") due = v;
+      else if (f.key === "deadline") deadline = v;
       else fields[f.key] = v;
       return " ";
     });
@@ -214,6 +222,7 @@ export function parseTaskLine(line: string): ParsedTask | null {
     ...refs,
     checked: isClosedStatus(status),
     due,
+    deadline,
     fields,
     blockLink: block ? block[1] : null,
     todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
@@ -292,7 +301,7 @@ export function serializeTask(task: ParsedTask): string {
   const marker = markerFor(task);
   if (marker) out += ` ${marker}`;
   for (const f of FIELDS) {
-    const v = f.key === "due" ? task.due : task.fields?.[f.key];
+    const v = f.key === "due" ? task.due : f.key === "deadline" ? task.deadline : task.fields?.[f.key];
     if (v) out += ` ${f.write(v)}`;
   }
   if (task.blockLink) out += ` ^${task.blockLink}`;
@@ -305,7 +314,7 @@ export function serializeTask(task: ParsedTask): string {
  */
 export function needsRelayout(line: string, task: ParsedTask): boolean {
   if (!/%%td:[A-Za-z0-9_-]+%%\s*$/.test(line)) return false;
-  return !!task.due || !!task.blockLink || Object.values(task.fields ?? {}).some(Boolean);
+  return !!task.due || !!task.deadline || !!task.blockLink || Object.values(task.fields ?? {}).some(Boolean);
 }
 
 /** How a label is written on a line: `@name`, or `@[Label name]` when the name needs it. */
