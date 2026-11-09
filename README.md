@@ -415,7 +415,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Order:** only subtasks are kept in order. The order of top-level tasks in a note isn't synced, since one note can hold tasks from several projects. The first time a task's subtasks are seen after updating, their order is just recorded: if the note and Todoist disagree then, they're left until one side is reordered. Lines synced before this version are taken as they're nested the first time each note syncs.
 - **Tasks plugin:** dates other than `⏳` and `📅` stay in the note. Priorities sync only with **Write Tasks plugin fields** on, and 🔽 and ⏬ both count as p4.
 - **Copies of a task:** only the home line decides its nesting and subtask order (see [The same task in several notes](#the-same-task-in-several-notes)). Completing a `🏁 delete` task in a copy, which deletes that line, doesn't complete it while other lines remain; tick it instead. A copy pasted from an old version of the line counts as an edit, so its older values are sent to Todoist.
-- **Not yet supported:** Todoist query blocks.
+- **No Todoist query blocks:** to list tasks in a note, use a Tasks plugin query. Its results show each task's chip (see [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin)).
 
 ## Development
 
