@@ -7,6 +7,8 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-09
+
 ### Fixed
 - Changing a task's date on the line or from the chip lost the time set in Todoist. The time is now kept, including on a repeating task (`every friday at 2pm`), and the chip shows it after the date. Each device runs one full sync to learn every task's time.
 - A task with a time fixed to a timezone was shown on the UTC day, which could be the day before. It's now on the day it falls on in its timezone.
@@ -108,7 +110,8 @@ First release. Needs Obsidian 1.8.7 or later.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
-[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.4.0...dev
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.4.1...dev
+[0.4.1]: https://github.com/timothydsmith/inlineTasks/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/timothydsmith/inlineTasks/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/timothydsmith/inlineTasks/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/timothydsmith/inlineTasks/compare/0.1.0...0.2.0
