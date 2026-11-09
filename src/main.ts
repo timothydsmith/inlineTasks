@@ -1,6 +1,7 @@
 import { EditorView } from "@codemirror/view";
-import { Editor, editorInfoField, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
+import { Editor, editorInfoField, MarkdownView, normalizePath, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
+import { CATALOG_FILE, catalogNote } from "./sync/catalog";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
 import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withRef } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
@@ -558,7 +559,7 @@ export default class InlineTasksPlugin extends Plugin {
 
   /** A note was written: note where the change came from, then schedule a push. */
   private async onWrite(f: TAbstractFile): Promise<void> {
-    if (!(f instanceof TFile) || f.extension !== "md" || f.path.startsWith("Inline Tasks sync log")) return;
+    if (!(f instanceof TFile) || f.extension !== "md" || f.path.startsWith("Inline Tasks sync log") || f.path === this.catalogPath()) return;
     const origin = this.origin.modified(f.path, await this.app.vault.read(f), Date.now());
     if (origin !== "own") this.log(`${f.path}: changed (${origin})`);
     this.dirty.add(f.path);
@@ -599,7 +600,64 @@ export default class InlineTasksPlugin extends Plugin {
     if (!this.settings.apiToken) return;
     await this.guard(() => this.engine.pull(), notify);
     this.refresh();
+    await this.writeCatalog();
     if (notify) new Notice("Todoist: synced");
+  }
+
+  // ------------------------------------------------------------ projects and labels note
+
+  defaultCatalogPath(): string {
+    return normalizePath(`${this.app.vault.configDir}/${CATALOG_FILE}`);
+  }
+
+  /** Where the projects and labels note goes, from the setting. */
+  private catalogPath(): string {
+    const p = normalizePath(this.settings.catalogNotePath || this.defaultCatalogPath());
+    return p.toLowerCase().endsWith(".md") ? p : `${p}.md`;
+  }
+
+  /**
+   * Write the projects and labels note, if the setting is on and its text has changed. A note under
+   * a dot folder (such as the config folder) isn't in Obsidian's vault index, so it's written
+   * through the adapter; elsewhere through the vault, so Obsidian sees it.
+   */
+  async writeCatalog(notify = false): Promise<void> {
+    if (!this.settings.catalogNote) return;
+    if (!Object.keys(this.state.projects).length) {
+      if (notify) new Notice("The projects and labels note is written once the plugin has synced with Todoist");
+      return;
+    }
+    const path = this.catalogPath();
+    if (path.split("/").includes("..")) {
+      this.log(`error: the projects and labels note location leaves the vault: ${path}`);
+      if (notify) new Notice(`The projects and labels note must be inside the vault, not ${path}`);
+      return;
+    }
+    const body = catalogNote(this.state, this.settings);
+    const { vault } = this.app;
+    const { adapter } = vault;
+    try {
+      if ((await adapter.exists(path)) && (await adapter.read(path)) === body) {
+        if (notify) new Notice(`The projects and labels note is up to date: ${path}`);
+        return;
+      }
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      const file = vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) {
+        await vault.modify(file, body);
+      } else if (path.split("/").some((part) => part.startsWith("."))) {
+        if (dir && !(await adapter.exists(dir))) await adapter.mkdir(dir);
+        await adapter.write(path, body);
+      } else {
+        if (dir && !vault.getAbstractFileByPath(dir)) await vault.createFolder(dir);
+        await vault.create(path, body);
+      }
+      this.log(`wrote the projects and labels note: ${path}`);
+      if (notify) new Notice(`Wrote the projects and labels note: ${path}`);
+    } catch (e) {
+      this.log(`error: couldn't write the projects and labels note ${path}: ${(e as Error).message}`);
+      if (notify) new Notice(`Couldn't write ${path}: ${(e as Error).message}`);
+    }
   }
 
   /** Write the active editor's unsaved text to disk, so an explicit sync pushes what's on screen. */

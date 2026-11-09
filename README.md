@@ -220,6 +220,7 @@ Each device pushes the changes made on it:
 - **Typed here:** a change made in this device's editor is pushed within seconds.
 - **Arrived from elsewhere:** a change delivered by Obsidian Sync, OneDrive or another app is pushed only after the note has been unchanged for 2 minutes. By then the device you typed on has usually created the task, and its marker has synced across, so nothing is created twice and half-typed lines from the other device are never created.
 - **Written by a script or agent:** notes written directly to disk count as arriving from elsewhere, so their tasks appear in Todoist about 2 minutes later.
+- **Telling an agent your projects and labels:** turn on **Projects and labels note** (see [Notes for agents](#notes-for-agents)).
 - **Who creates those:** after the wait, edits to tasks that are already linked are pushed by whichever device sees them. New checkboxes that arrived from elsewhere are created only by devices with **Create tasks for changes from other devices or apps** turned on. It's on for desktop and off for mobile by default, so a note written by an agent is created once, not once per device. Keep it on for exactly one device. If it's on for none, tasks written by a script won't be created until you edit the line.
 
 Creation is also crash- and retry-safe:
@@ -227,6 +228,19 @@ Creation is also crash- and retry-safe:
 2. The same uuid is used as the Todoist command id, so Todoist de-duplicates a retried create.
 
 If you still see duplicates, for example from editing the same note on two devices at once, turn off **This device creates tasks** on secondary devices. That setting is stored per device.
+
+### Notes for agents
+An agent or script that writes tasks into your notes doesn't need its own Todoist connection: it writes checkbox lines with references, and the plugin files them. To tell it which projects and labels exist, turn on **Projects and labels note** in settings. The plugin then keeps a note with:
+
+- your active projects as `#[Name]` references, nested as in Todoist, and your labels as `@label` references,
+- how to write a line with a project, labels, a priority and a due date,
+- your folder mappings and excluded folders.
+
+It's rewritten whenever a sync brings a change, so it follows projects and labels added or renamed in Todoist. Don't edit it: changes are overwritten. Its frontmatter has `todoist: false`, so its example line never becomes a task.
+
+- **Where it goes:** `.obsidian/todoist-projects-and-labels.md` (in your vault's config folder) unless you set **Projects and labels note location**. Set a path like `Agents/Todoist.md` to put it with your notes instead.
+- **In the config folder:** the note stays out of Obsidian's file list, search and graph, but also out of reach of agents that read the vault through Obsidian (such as one using a REST API plugin), and of search tools that skip hidden folders by default. Give the agent its path, for example in its instructions file.
+- **Each device writes it:** with the setting on and the note in a synced folder, every device writes the same text, and only when it changes.
 
 ## Install
 
@@ -258,6 +272,8 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | Pull interval (minutes) | 5 | Minimum 1. |
 | Import subtasks | Ask each time | Whether **Import task from Todoist** brings a task's open subtasks: **Ask each time**, **Always import** or **Never import**. |
 | Write Tasks plugin fields | off | Writes each task's Todoist priority on its line as a Tasks priority, synced both ways, and adds `✅` done dates. See [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin). |
+| Projects and labels note | off | Keeps a note listing your Todoist projects and labels for agents. See [Notes for agents](#notes-for-agents). |
+| Projects and labels note location | `.obsidian/todoist-projects-and-labels.md` | A path in the vault; `.md` is added if missing. |
 | This device creates tasks | on | Stored per device, not in `data.json`. Off means this device never creates tasks, even ones typed here. |
 | Create tasks for changes from other devices or apps | on for desktop, off for mobile | Stored per device. See [Multiple devices](#multiple-devices-obsidian-sync). |
 | Backfill existing checkboxes | — | Opens the backfill preview. |

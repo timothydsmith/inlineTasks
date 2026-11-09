@@ -10,6 +10,10 @@ export interface InlineTasksSettings {
   importSubtasks: ImportSubtasks;
   /** Write Todoist priorities as Tasks priorities on the line, and ✅ done dates. */
   tasksFields: boolean;
+  /** Keep a note listing the Todoist projects and labels, for agents that write tasks. */
+  catalogNote: boolean;
+  /** Where that note goes. Empty: `todoist-projects-and-labels.md` in the vault's config folder. */
+  catalogNotePath: string;
 }
 
 export type ImportSubtasks = "ask" | "always" | "never";
@@ -21,6 +25,8 @@ export const DEFAULT_SETTINGS: InlineTasksSettings = {
   pullIntervalMinutes: 5,
   importSubtasks: "ask",
   tasksFields: false,
+  catalogNote: false,
+  catalogNotePath: "",
 };
 
 export class InlineTasksSettingTab extends PluginSettingTab {
@@ -126,6 +132,34 @@ export class InlineTasksSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Projects and labels note")
+      .setDesc(
+        "Keep a note listing your Todoist projects and labels, and how to write a line that files a task in them, so agents and scripts can add tasks to your notes without a Todoist connection of their own. Updated each time the plugin syncs.",
+      )
+      .addToggle((t) =>
+        t.setValue(s.catalogNote).onChange(async (v) => {
+          s.catalogNote = v;
+          await this.plugin.saveAll();
+          if (v) void this.plugin.writeCatalog(true);
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Projects and labels note location")
+      .setDesc(
+        `A path in the vault. Leave it empty for ${this.plugin.defaultCatalogPath()}. A note in a folder starting with a dot (like the config folder) is hidden from Obsidian's file list and search, and from agents that read the vault through Obsidian; point an agent at it by its path.`,
+      )
+      .addText((t) =>
+        t
+          .setPlaceholder(this.plugin.defaultCatalogPath())
+          .setValue(s.catalogNotePath)
+          .onChange(async (v) => {
+            s.catalogNotePath = v.trim();
+            await this.plugin.saveAll();
+          }),
+      );
+
+    new Setting(containerEl)
       .setName("This device creates tasks")
       .setDesc("Stored per device. Turn off on secondary devices if you see duplicate tasks when using Obsidian Sync.")
       .addToggle((t) =>
@@ -149,5 +183,10 @@ export class InlineTasksSettingTab extends PluginSettingTab {
       .setName("Backfill existing checkboxes")
       .setDesc(this.plugin.state.backfillDone ? "Done. New checkboxes sync automatically." : "Sync is paused until you review and confirm the backfill.")
       .addButton((b) => b.setButtonText("Review…").onClick(() => this.plugin.openBackfill()));
+  }
+
+  /** The note lists the excluded folders and folder mappings, and its location may have changed. */
+  hide(): void {
+    void this.plugin.writeCatalog();
   }
 }

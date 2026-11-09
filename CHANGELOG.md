@@ -14,6 +14,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
   - `p1`–`p4` typed on a line, or a priority picked on the chip, becomes the Tasks priority.
   - A task completed in Todoist gets `✅` and the date it was completed, and one ticked in the note gets today's date. Unticking removes the date.
   - Imported tasks come with their priority.
+- **Projects and labels note** setting, off by default. When on, the plugin keeps a note listing your Todoist projects and labels, how to write a line that files a task in them, and your folder mappings and excluded folders, so agents and scripts can add tasks to your notes without a Todoist connection of their own. It's rewritten whenever a sync changes it. It goes in the vault's config folder (`.obsidian/todoist-projects-and-labels.md`) unless you set another location.
 
 ### Changed
 - The `%%td:…%%` marker goes after the task's text and before its dates and other fields, so the Tasks plugin can read them. Each device moves the marker on existing lines once, the first time it starts this version.
