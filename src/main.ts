@@ -275,7 +275,18 @@ export default class InlineTasksPlugin extends Plugin {
   private registerSuggests(): void {
     const enabled = (file: TFile | null) =>
       !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path);
-    this.registerEditorSuggest(new ProjectSuggest(this.app, () => this.state, enabled));
+    const projects = new ProjectSuggest(this.app, () => this.state, enabled);
+    this.registerEditorSuggest(projects);
+    // Obsidian shows only the first suggester that offers anything, in the order they were
+    // registered. The Tasks plugin's offers its fields anywhere on a task line, so if it loaded
+    // first it would hide this one. This one only offers anything after `#[`, so it goes first.
+    // `editorSuggest.suggests` isn't in Obsidian's public API; without it, the order stays as is.
+    const suggests = (this.app.workspace as unknown as { editorSuggest?: { suggests?: unknown[] } }).editorSuggest?.suggests;
+    const at = suggests?.indexOf(projects) ?? -1;
+    if (suggests && at > 0) {
+      suggests.splice(at, 1);
+      suggests.unshift(projects);
+    }
     this.registerEditorExtension(labelTrigger(enabled, (view, pos) => this.labelsFromAt(view, pos)));
   }
 
