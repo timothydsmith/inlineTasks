@@ -1636,7 +1636,7 @@ describe("SyncEngine", () => {
       vault.files.set("Note.md", "- [ ] A\n- [ ] B");
       await engine.pushFile("Note.md");
       todoist.edit("T1", { due: { date: "2026-11-10", string: "every 15th", is_recurring: true } });
-      todoist.edit("T2", { due: { date: "2026-11-20", string: "every 3rd friday", is_recurring: true } });
+      todoist.edit("T2", { due: { date: "2026-11-20", string: "every first workday", is_recurring: true } });
       await engine.pull();
       expect(vault.files.get("Note.md")).toBe("- [ ] A %%td:T1%% ⏳ 2026-11-10\n- [ ] B %%td:T2%% ⏳ 2026-11-20");
       settings.tasksFields = true;
@@ -1647,7 +1647,7 @@ describe("SyncEngine", () => {
       const from = todoist.calls.length;
       vault.files.set("Note.md", "- [ ] A %%td:T1%% 🔁 every month on the 15th ⏳ 2026-11-10\n- [ ] B %%td:T2%% ⏳ 2026-12-18");
       await engine.pushFile("Note.md");
-      expect(sent(from).find((c) => c.type === "item_update")!.args.due).toEqual({ date: "2026-12-18", string: "every 3rd friday" });
+      expect(sent(from).find((c) => c.type === "item_update")!.args.due).toEqual({ date: "2026-12-18", string: "every first workday" });
     });
 
     it("keeps a Todoist repeat when the line's date changes, with Tasks fields off", async () => {
