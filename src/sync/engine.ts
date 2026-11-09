@@ -1,18 +1,31 @@
 import {
+  blockEnd,
+  createsTask,
   findLineByMarker,
   findTasks,
+  isCancelledStatus,
+  linePriority,
+  needsRelayout,
   parentLine,
   parseTaskLine,
   PENDING,
   serializeTask,
+  tasksDateSettings,
+  withDate,
+  withDoneDate,
+  withLinePriority,
   withTitle,
   type ParsedTask,
   type TaskFields,
 } from "../parse/taskLine";
 import { dueDate, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
+import { isoDate } from "./dates";
+import { historyLines, type CompletionEvent } from "./history";
 import { isEmpty, merge } from "./merge";
+import { canonicalRule, todoistRule } from "./recurrence";
+import { childProject, findProjectId, splitProjectPath } from "./projects";
 import { compareSiblings, inOrderOf, moveBlock, reorderBlocks, reorderKeys, sameOrder, type Sibling } from "./order";
-import type { SyncState } from "./state";
+import type { SyncState, TaskRecord } from "./state";
 
 /** The slice of Obsidian the engine needs. Implemented in main.ts; faked in tests. */
 export interface VaultAdapter {
@@ -31,6 +44,15 @@ export interface EngineSettings {
   canCreate: boolean;
   /** One level of list indentation, for lines the sync re-indents. Defaults to a tab. */
   indent?: string;
+  /** Write Todoist priorities as Tasks priorities on the line, and ✅ done dates. */
+  tasksFields?: boolean;
+  /**
+   * Tasks puts a repeating task's next occurrence on the line below the ticked one (its "next
+   * recurrence appears on the line below" setting), so history lines go above the task's line.
+   */
+  historyAbove?: boolean;
+  /** The date the Tasks plugin takes from a note's name as its tasks' scheduled date, or null (see fileDate.ts). */
+  fileDate?: (path: string) => string | null;
 }
 
 export interface PushOptions {
@@ -53,6 +75,24 @@ export interface PushResult {
 }
 
 const BATCH = 90;
+
+/** A task's fields as synced, to write to each of its lines (see SyncEngine.writeLines). */
+interface LineTarget {
+  fields: TaskFields;
+  /** Its title before this sync, which its lines may still have (see withTitle). */
+  title: string;
+  /** When Todoist completed it, for the `✅` date of lines ticked by this sync. */
+  completedAt?: string | null;
+  /** Its lines are from before deadlines synced: a lone `📅` is its date (see readLine). */
+  legacy?: boolean;
+}
+/** How long a repeating task's completions in Todoist are looked for in its activity log, which can lag. */
+export const HISTORY_WAIT_MS = 15 * 60_000;
+/**
+ * How long a `🏁 delete` line must have been gone before its Todoist task is completed, so a line
+ * cut from one note and pasted into another is found there first.
+ */
+export const GONE_GRACE_MS = 30_000;
 
 export class SyncEngine {
   private busy: Promise<unknown> = Promise.resolve();
@@ -95,7 +135,7 @@ export class SyncEngine {
 
   /** Should an unmarked task on this line become a Todoist task? */
   private wantsCreate(task: ParsedTask): boolean {
-    return !task.excluded && !task.checked && !task.todoistId && !task.pendingUuid;
+    return createsTask(task);
   }
 
   projectIdFor(path: string): string | undefined {
@@ -123,10 +163,12 @@ export class SyncEngine {
     return Object.values(this.state.labels).find((l) => labelKey(l.name) === key)?.name;
   }
 
-  /** Id of the active (non-archived) project with this name, ignoring case and surrounding spaces. */
+  /**
+   * Id of the active (non-archived) project with this name, ignoring case and surrounding spaces,
+   * or at the end of this path of nested projects, `Work/Clients/Acme` (see findProjectId).
+   */
   findProject(name: string): string | undefined {
-    const key = projectKey(name);
-    return Object.entries(this.state.projects).find(([, p]) => !p.archived && projectKey(p.name) === key)?.[0];
+    return findProjectId(this.state, name);
   }
 
   private backlink(path: string, pendingUuid: string): string {
@@ -141,7 +183,7 @@ export class SyncEngine {
     const counts: Record<string, number> = {};
     for (const path of this.vault.markdownFiles()) {
       if (!this.isFileEligible(path)) continue;
-      const n = findTasks(await this.vault.read(path)).filter((t) => this.wantsCreate(t.task)).length;
+      const n = findTasks(await this.vault.read(path), this.fileDate(path)).filter((t) => this.wantsCreate(t.task)).length;
       if (n) {
         const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "/";
         counts[folder] = (counts[folder] ?? 0) + n;
@@ -159,6 +201,188 @@ export class SyncEngine {
   }
 
   /**
+   * Rewrite the lines in the vault written by earlier versions, so they read the same now:
+   * - before 0.4.0, the marker went after the fields, which hides them from the Tasks plugin;
+   * - before deadlines synced, `📅` was the Todoist date, which is now `⏳` (see readLine).
+   * Lines being edited are left to their next push.
+   */
+  migrateVault(skip?: { path: string; line: number }): Promise<number> {
+    return this.exclusive(async () => {
+      let n = 0;
+      for (const path of this.vault.markdownFiles()) {
+        if (!this.isFileEligible(path)) continue;
+        const migrated = (content: string, upgrade: boolean) => {
+          const lines = content.split("\n");
+          let k = 0;
+          for (const { line, task } of findTasks(content, this.fileDate(path))) {
+            if (path === skip?.path && line === skip.line) continue;
+            const next = this.migrate(lines[line], task, upgrade);
+            if (!next) continue;
+            lines[line] = serializeTask(next);
+            k++;
+          }
+          return { content: lines.join("\n"), k };
+        };
+        // Read first, so notes with nothing to change aren't written.
+        if (!migrated(await this.vault.read(path), false).k) {
+          migrated(await this.vault.read(path), true); // records whose lines needn't change
+          continue;
+        }
+        await this.vault.process(path, (content) => {
+          const r = migrated(content, true);
+          n += r.k;
+          return r.k ? r.content : content;
+        });
+      }
+      this.state.relaidOut = true;
+      this.state.datesMigrated = true;
+      await this.save();
+      return n;
+    });
+  }
+
+  /** Whether a task's record is from before deadlines synced, when its line's `📅` was the Todoist date. */
+  private isLegacy(rec: TaskRecord | undefined): boolean {
+    return !!rec && !("deadline" in rec.base);
+  }
+
+  /**
+   * A synced line's task, its words read as its title as last synced (see withTitle). On a line
+   * last synced before deadlines did, with only a `📅` date, that date is the Todoist date: the
+   * line is read as if it had it as `⏳`, and is written that way when next rewritten.
+   */
+  private readLine(task: ParsedTask, rec: TaskRecord | undefined): ParsedTask {
+    return this.legacyDates(task.todoistId ? withTitle(task, rec?.base.text) : task, rec);
+  }
+
+  /** The task with a `📅` read as the Todoist date, if its line is from before deadlines synced (see readLine). */
+  private legacyDates(t: ParsedTask, rec: TaskRecord | undefined): ParsedTask {
+    return this.isLegacy(rec) && t.deadline && !t.due ? { ...t, due: t.deadline, deadline: null } : t;
+  }
+
+  /**
+   * The task on a line as an earlier version's line should be written now, or null if it's fine.
+   * With `upgrade`, its record is marked as synced with deadlines, since its line now reads right.
+   */
+  private migrate(line: string, task: ParsedTask, upgrade: boolean): ParsedTask | null {
+    const rec = task.todoistId ? this.state.tasks[task.todoistId] : undefined;
+    const t = task.todoistId ? withTitle(task, rec?.base.text) : task;
+    const next = this.legacyDates(t, rec);
+    if (upgrade && rec && this.isLegacy(rec)) rec.base = { ...rec.base, deadline: null };
+    return next === t && !needsRelayout(line, task) ? null : next;
+  }
+
+  /** The date tasks in `path` without a date of their own have, from its name (see fileDate.ts). */
+  private fileDate(path: string): string | null {
+    return this.settings().fileDate?.(path) ?? null;
+  }
+
+  private tasksFields(): boolean {
+    return !!this.settings().tasksFields;
+  }
+
+  /**
+   * A line's synced fields: the deadline too, unless its record is from before deadlines synced
+   * (see readLine), and the priority when Tasks fields are written.
+   */
+  private localFields(task: ParsedTask, legacy = false): TaskFields {
+    const f: TaskFields = { text: task.text, checked: task.checked, due: task.due };
+    if (!legacy) f.deadline = task.deadline ?? null;
+    if (this.tasksFields()) {
+      f.priority = linePriority(task);
+      const rule = task.fields?.recurrence;
+      const r = rule ? canonicalRule(rule) : null;
+      if (r !== undefined) f.recurrence = r; // a rule Todoist wouldn't understand stays on the line
+    }
+    return f;
+  }
+
+  /** A Todoist task's synced fields, as `localFields` gives a line's. */
+  private remoteFields(item: TodoistItem, legacy = false): TaskFields {
+    const f: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
+    if (!legacy) f.deadline = item.deadline?.date ?? null;
+    if (this.tasksFields()) {
+      f.priority = 5 - item.priority;
+      const r = item.due?.is_recurring ? (item.due.string ? canonicalRule(item.due.string) : undefined) : null;
+      if (r !== undefined) f.recurrence = r; // a repeat Tasks wouldn't understand stays in Todoist
+    }
+    return f;
+  }
+
+  /**
+   * The Todoist due object for a task's date and repeat, from its fields as they're to be synced:
+   * - a repeat in Todoist that the line doesn't track (Tasks fields not written, or a rule Tasks
+   *   wouldn't understand) is kept, with the line's date as its next one;
+   * - otherwise the line's `🔁` rule, from the line's date, or the date alone.
+   * Todoist reads a date with a repeat as its next occurrence.
+   */
+  private dueArg(id: string, f: TaskFields): Record<string, unknown> | null {
+    const meta = this.state.remote[id];
+    const theirs = meta?.recurring ? meta.dueString : undefined;
+    if (theirs && (f.recurrence === undefined || canonicalRule(theirs) === undefined)) {
+      return f.due ? { date: f.due, string: theirs } : null;
+    }
+    if (f.recurrence) return { string: todoistRule(f.recurrence), ...(f.due ? { date: f.due } : {}), lang: "en" };
+    return f.due ? { date: f.due } : null;
+  }
+
+  /**
+   * Lines the Tasks plugin wrote when a repeating task was ticked: it adds the next occurrence as
+   * a new line, copying the marker, and leaves the ticked line done. The ticked copies (those with
+   * a `🔁`, beside exactly one open line) lose their marker and stay as history; the open line is
+   * the task. Returns the ids of the tasks so repeated.
+   */
+  private unlinkRepeated(lines: string[], found: { line: number; task: ParsedTask }[]): Set<string> {
+    const byId = new Map<string, { line: number; task: ParsedTask }[]>();
+    for (const f of found) if (f.task.todoistId) byId.set(f.task.todoistId, [...(byId.get(f.task.todoistId) ?? []), f]);
+    const repeated = new Set<string>();
+    for (const [id, group] of byId) {
+      if (group.length < 2) continue;
+      const done = group.filter((g) => g.task.checked);
+      if (group.length - done.length !== 1 || !done.every((g) => g.task.fields?.recurrence)) continue;
+      const rec = this.state.tasks[id];
+      if (!rec || rec.orphaned) continue;
+      for (const g of done) lines[g.line] = serializeTask({ ...withTitle(g.task, rec.base.text), todoistId: null });
+      repeated.add(id);
+    }
+    return repeated;
+  }
+
+  /**
+   * The task on a line as it should be written before it's synced, or null if the line is fine:
+   * - in the current layout, its marker before its fields (see needsRelayout);
+   * - with Tasks fields written, a `p1`–`p4` reference becomes the Tasks priority, which then
+   *   syncs, and a task ticked here since the last sync gets a ✅ date (❌ if cancelled, when Tasks
+   *   adds cancelled dates), which unticking removes.
+   */
+  private tidy(line: string, task: ParsedTask): ParsedTask | null {
+    const rec = task.todoistId ? this.state.tasks[task.todoistId] : undefined;
+    const t = task.todoistId ? withTitle(task, rec?.base.text) : task;
+    const migrated = this.migrate(line, task, true);
+    let next = migrated ?? t;
+    if (this.tasksFields()) {
+      if (t.priorityRef && (t.todoistId || t.pendingUuid || createsTask(t))) {
+        next = { ...next, priorityRef: null, fields: withLinePriority(next.fields, t.priorityRef) };
+      }
+      if (rec && !rec.orphaned) {
+        const cancelled = isCancelledStatus(t.status);
+        if (t.checked && !cancelled && !t.fields?.done && !rec.base.checked) {
+          next = { ...next, fields: withDoneDate(next.fields, isoDate(new Date())) };
+        } else if (!t.checked && t.fields?.done) {
+          next = { ...next, fields: withDoneDate(next.fields, null) };
+        }
+        // Cancelled here since the last sync: a ❌ date, as Tasks adds when it cancels one.
+        if (t.checked && cancelled && !t.fields?.cancelled && !rec.base.checked && tasksDateSettings().cancelled) {
+          next = { ...next, fields: withDate(next.fields, "cancelled", isoDate(new Date())) };
+        } else if (!t.checked && t.fields?.cancelled) {
+          next = { ...next, fields: withDate(next.fields, "cancelled", null) };
+        }
+      }
+    }
+    return migrated || next !== t ? next : null;
+  }
+
+  /**
    * Link every `%%td:<id>%%` marker in the vault that this device has no record of, using the line
    * as the merge base. For a device starting without sync state (a new device, or cleared app
    * data): the next pull then fetches the tasks' details, and any change made in Todoist since is
@@ -169,10 +393,20 @@ export class SyncEngine {
       let n = 0;
       for (const path of this.vault.markdownFiles()) {
         if (!this.isFileEligible(path)) continue;
-        for (const { task } of findTasks(await this.vault.read(path))) {
-          if (!task.todoistId || this.state.tasks[task.todoistId]) continue;
-          // The line's words are its title as synced (see withTitle), not references.
-          this.state.tasks[task.todoistId] = { path, base: { text: task.content, checked: task.checked, due: task.due } };
+        for (const { task } of findTasks(await this.vault.read(path), this.fileDate(path))) {
+          if (!task.todoistId) continue;
+          const known = this.state.tasks[task.todoistId];
+          if (known) {
+            // Another line for a task already linked from another note: a copy.
+            if (known.path !== path && !known.copies?.includes(path)) known.copies = [...(known.copies ?? []), path];
+            continue;
+          }
+          // The line's words are its title as synced (see withTitle), not references. Lines not
+          // rewritten for deadlines yet still have the Todoist date as `📅` (see readLine).
+          const base: TaskFields = { text: task.content, checked: task.checked, due: task.due };
+          if (!this.state.datesMigrated) base.due = task.due ?? task.deadline ?? null;
+          else base.deadline = task.deadline ?? null;
+          this.state.tasks[task.todoistId] = { path, base, ...(task.fields?.onCompletion === "delete" ? { deleteOnDone: true } : {}) };
           n++;
         }
       }
@@ -210,13 +444,14 @@ export class SyncEngine {
   registerImport(path: string, imported: { item: TodoistItem; line: string }[]): Promise<void> {
     return this.exclusive(async () => {
       for (const { item, line } of imported) {
-        const parsed = parseTaskLine(line);
+        const parsed = parseTaskLine(line, this.fileDate(path));
         if (!parsed) continue;
-        this.state.tasks[item.id] = { path, base: { text: parsed.content, checked: false, due: parsed.due } };
+        this.state.tasks[item.id] = { path, base: { ...this.localFields(parsed), text: parsed.content, checked: false } };
         this.state.remote[item.id] = {
           projectId: item.project_id,
           priority: item.priority,
           due: dueDate(item.due),
+          deadline: item.deadline?.date ?? null,
           dueString: item.due?.string,
           recurring: item.due?.is_recurring,
           checked: false,
@@ -253,9 +488,22 @@ export class SyncEngine {
     // 1. Assign pending markers to new tasks and write them to disk first, so a crash
     //    or a second device never results in an unmarked line being created twice.
     const newUuids: string[] = [];
+    let tidied = 0;
+    let repeated = new Set<string>();
     await this.vault.process(path, (content) => {
       const lines = content.split("\n");
-      for (const { line, task } of findTasks(content)) {
+      const all = findTasks(content, this.fileDate(path));
+      repeated = this.unlinkRepeated(lines, all);
+      for (const found of all) {
+        const { line } = found;
+        let task = found.task;
+        if (task.todoistId && repeated.has(task.todoistId) && task.checked) continue; // unlinked above
+        const next = line === opts.skipLine ? null : this.tidy(lines[line], task);
+        if (next) {
+          task = next;
+          lines[line] = serializeTask(next);
+          tidied++;
+        }
         if (!this.wantsCreate(task)) continue;
         if (!canCreate) continue;
         if (line === opts.skipLine) {
@@ -266,8 +514,10 @@ export class SyncEngine {
         newUuids.push(id);
         lines[line] = serializeTask({ ...task, pendingUuid: id });
       }
-      return newUuids.length ? lines.join("\n") : content;
+      return newUuids.length || tidied || repeated.size ? lines.join("\n") : content;
     });
+    if (tidied) this.log(`${path}: rewrote ${tidied} line(s) for the Tasks plugin`);
+    if (repeated.size) this.log(`${path}: ${repeated.size} repeating task(s) ticked with the Tasks plugin`);
     for (const id of newUuids) this.state.pending[id] = { path, createdAt: Date.now() };
     if (newUuids.length) {
       this.log(`${path}: creating ${newUuids.length} new task(s)`);
@@ -276,7 +526,7 @@ export class SyncEngine {
 
     // 2. Build commands.
     const content = await this.vault.read(path);
-    const tasks = findTasks(content);
+    const tasks = findTasks(content, this.fileDate(path));
     const commands: Command[] = [];
     const onOk: Record<string, () => void> = {};
     const seenIds = new Set<string>();
@@ -290,20 +540,38 @@ export class SyncEngine {
     const projectTarget = (name: string): string | undefined => {
       const existing = this.findProject(name);
       if (existing) return existing;
-      const key = projectKey(name);
-      for (const [tmp, k] of newProjects) if (k === key) return tmp;
-      if (this.state.pendingProjects[key]) {
-        // An earlier create of this project got no answer. Wait for the next pull, which either
-        // brings it in or shows it was never made, rather than risk creating it twice.
-        deferred = true;
-        return undefined;
+      // A path, `Work/Clients/Acme`: each project in it that doesn't exist yet is created, under
+      // the one before it. Its first name can be an existing project at any level.
+      const parts = splitProjectPath(name);
+      let parent: string | undefined;
+      for (let i = 0; i < parts.length; i++) {
+        const found = i === 0 ? this.findProject(parts[0]) : parent && !newProjects.has(parent) ? childProject(this.state, parent, parts[i]) : undefined;
+        if (found) {
+          parent = found;
+          continue;
+        }
+        const key = projectKey(parts.slice(0, i + 1).join("/"));
+        const queued = [...newProjects].find(([, k]) => k === key)?.[0];
+        if (queued) {
+          parent = queued;
+          continue;
+        }
+        if (this.state.pendingProjects[key]) {
+          // An earlier create of this project got no answer. Wait for the next pull, which either
+          // brings it in or shows it was never made, rather than risk creating it twice.
+          deferred = true;
+          return undefined;
+        }
+        if (!canCreate) return undefined; // hold; a device that may create will file it
+        const tmp = makeUuid();
+        this.state.pendingProjects[key] = tmp;
+        newProjects.set(tmp, key);
+        const args: Record<string, unknown> = { name: parts[i] };
+        if (parent) args.parent_id = parent;
+        commands.push({ type: "project_add", uuid: tmp, temp_id: tmp, args });
+        parent = tmp;
       }
-      if (!canCreate) return undefined; // hold; a device that may create will file it
-      const tmp = makeUuid();
-      this.state.pendingProjects[key] = tmp;
-      newProjects.set(tmp, key);
-      commands.push({ type: "project_add", uuid: tmp, temp_id: tmp, args: { name: name.trim() } });
-      return tmp;
+      return parent;
     };
 
     /** Labels created by this push: key → name as created. */
@@ -339,6 +607,11 @@ export class SyncEngine {
 
     const lines = content.split("\n");
     const byLine = new Map(tasks.map((t) => [t.line, t.task]));
+    /** Each synced task's lines in this note: more than one if it's copied within the note. */
+    const linesOf = new Map<string, ParsedTask[]>();
+    for (const { task } of tasks) if (task.todoistId) linesOf.set(task.todoistId, [...(linesOf.get(task.todoistId) ?? []), task]);
+    /** Tasks whose fields this push changed in Todoist: written to their other lines after. */
+    const spread = new Map<string, string>(); // id → title before the push
     const taskLines = new Set(byLine.keys());
     /** Creates sent by this push: pending uuid → project id sent (undefined: the Inbox). */
     const sentCreates = new Map<string, string | undefined>();
@@ -372,7 +645,7 @@ export class SyncEngine {
 
     for (const { line, task: parsed } of tasks) {
       let task = parsed;
-      let local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
+      let local = this.localFields(task);
 
       if (task.pendingUuid) {
         const pend = this.state.pending[task.pendingUuid];
@@ -407,10 +680,15 @@ export class SyncEngine {
           if (!labels) continue; // a label can't be created on this device
           args.labels = labels;
         }
-        if (task.priorityRef) args.priority = toApiPriority(task.priorityRef);
+        const priority = task.priorityRef ?? (this.tasksFields() ? linePriority(task) : null);
+        if (priority && priority !== 4) args.priority = toApiPriority(priority);
+        else if (task.priorityRef) args.priority = toApiPriority(task.priorityRef);
         // Due date in words: Todoist works it out, and the next pull writes it to the line.
+        const rule = this.tasksFields() && task.fields?.recurrence ? canonicalRule(task.fields.recurrence) : undefined;
         if (task.dueRef) args.due = dueFromWords(task.dueRef);
+        else if (rule) args.due = { string: todoistRule(rule), ...(task.due ? { date: task.due } : {}), lang: "en" };
         else if (task.due) args.due = { date: task.due };
+        if (task.deadline) args.deadline = { date: task.deadline };
         // Same uuid on retry: Todoist de-duplicates commands it has already applied.
         commands.push({ type: "item_add", uuid: task.pendingUuid, temp_id: task.pendingUuid, args });
         sentCreates.set(task.pendingUuid, args.project_id as string | undefined);
@@ -419,6 +697,9 @@ export class SyncEngine {
 
       if (!task.todoistId) continue;
       const id = task.todoistId;
+      // The same task on another line of this note: a copy. The first line carries its references;
+      // every line's fields count (see combinedLocal), and are sent once, with the first.
+      if (seenIds.has(id)) continue;
       seenIds.add(id);
       let rec = this.state.tasks[id];
       let adopted = false;
@@ -428,11 +709,19 @@ export class SyncEngine {
         rec = this.state.tasks[id] = { path, base: { ...local, text: parsed.content } };
         adopted = true;
       }
-      rec.path = path;
+      // In a note other than its home: a copy, or the task moved here if its home no longer has it.
+      if (rec.path !== path) await this.placeLine(rec, id, path);
+      const home = rec.path === path;
+      delete rec.gone;
       if (rec.orphaned) continue;
+      if (home) {
+        if (parsed.fields?.onCompletion === "delete") rec.deleteOnDone = true;
+        else delete rec.deleteOnDone;
+      }
       // Words of the synced title are title, not references (see withTitle).
-      task = withTitle(parsed, rec.base.text);
-      local = { text: task.text, checked: task.checked, due: task.due };
+      task = this.readLine(parsed, rec);
+      const r0 = rec;
+      local = this.combinedLocal((linesOf.get(id) ?? [parsed]).map((t) => this.readLine(t, r0)), rec);
 
       // `#[Project]` on a synced task: move it, then strip the reference. Not while the line is being edited.
       if (task.projectRef) {
@@ -446,7 +735,7 @@ export class SyncEngine {
             const cmd: Command = { type: "item_move", uuid: makeUuid(), args: { id, project_id: target } };
             commands.push(cmd);
             // Moving to a project makes it a top-level task there, so a nested line moves out of its block.
-            const nested = parentFor(line) !== null;
+            const nested = home && parentFor(line) !== null;
             const r = rec;
             onOk[cmd.uuid] = () => {
               markApplied(id, { project: true });
@@ -504,7 +793,7 @@ export class SyncEngine {
         }
       }
       // Due date in words on a synced task: send it to Todoist, then strip it. The pull that follows
-      // writes the date Todoist worked out to the line as `📅`. Not while the line is being edited.
+      // writes the date Todoist worked out to the line as `⏳`. Not while the line is being edited.
       if (task.dueRef) {
         if (line === opts.skipLine) {
           deferred = true;
@@ -513,10 +802,12 @@ export class SyncEngine {
           const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, due: dueFromWords(ref) } };
           commands.push(cmd);
           const lineDue = local.due;
+          const lineRule = local.recurrence;
           onOk[cmd.uuid] = () => {
             markApplied(id, { due: ref });
-            // The line's `📅` is superseded: count it as synced, so the pull's date replaces it.
+            // The line's `⏳` and `🔁` are superseded: count them as synced, so the pull's replace them.
             rec!.base = { ...rec!.base, due: lineDue };
+            if (lineRule !== undefined) rec!.base.recurrence = lineRule;
             this.wantPull = true;
           };
         }
@@ -524,8 +815,10 @@ export class SyncEngine {
       // Nesting changed in the note since the last sync (indented, outdented or moved): make it a
       // subtask of the task it's now under, or a top-level task. Todoist moves a subtask's own
       // subtasks with it, and those lines moved with it here, so they stay put.
-      const placed = parentFor(line);
-      if (placed === "wait" || (placed && sentCreates.has(placed.id))) {
+      const placed = home ? parentFor(line) : undefined;
+      if (placed === undefined) {
+        // A copy: its home note decides its nesting.
+      } else if (placed === "wait" || (placed && sentCreates.has(placed.id))) {
         if (canCreate) deferred = true; // its new parent is being created; move it once it has an id
       } else {
         const want = placed ? placed.id : null;
@@ -557,13 +850,34 @@ export class SyncEngine {
       if (adopted) continue;
 
       const { push } = merge(rec.base, local, rec.base, 0, 0);
-      // Words beat an edited `📅` on the same line; they're the newer intent.
-      if (task.dueRef && line !== opts.skipLine) delete push.due;
+      // Words beat an edited `⏳` or `🔁` on the same line; they're the newer intent.
+      if (task.dueRef && line !== opts.skipLine) {
+        delete push.due;
+        delete push.recurrence;
+      }
+      const synced: TaskFields = { ...rec.base, ...pickFields(local, push) };
+      const due = this.dueArg(id, synced);
+      if (repeated.has(id) && due && "string" in due) {
+        // Ticked with Tasks: complete this occurrence in Todoist, moving it to the next one on the
+        // line, rather than closing it (Todoist would work out its own next date).
+        const r = rec;
+        const cmd: Command = { type: "item_update_date_complete", uuid: makeUuid(), args: { id, due, is_forward: 1 } };
+        commands.push(cmd);
+        const done = pickFields(local, { due: null, ...("recurrence" in push ? { recurrence: null } : {}) });
+        onOk[cmd.uuid] = () => {
+          if (!spread.has(id)) spread.set(id, r.base.text);
+          r.base = { ...r.base, ...done };
+        };
+        delete push.due;
+        delete push.recurrence;
+      }
       if (isEmpty(push)) continue;
-      for (const cmd of commandsFor(id, push)) {
+      for (const cmd of commandsFor(id, push, due)) {
         commands.push(cmd);
         onOk[cmd.uuid] = () => {
+          if (!spread.has(id)) spread.set(id, rec!.base.text);
           rec!.base = { ...rec!.base, ...pickFields(local, push) };
+          if (cmd.type === "item_update" && push.priority !== undefined && meta) meta.priority = toApiPriority(push.priority);
           // A subtask ticked or unticked here: its parent's count changes now, not at the next pull.
           this.state.subtasks ??= {};
           if (cmd.type === "item_close") delete this.state.subtasks[id];
@@ -572,11 +886,18 @@ export class SyncEngine {
       }
     }
 
-    // Records for this file whose marker vanished: unlink (never delete in Todoist).
+    // Records for this file whose marker vanished: unlink (never delete in Todoist). A `🏁 delete`
+    // line was most likely deleted by Tasks on completion: noted, for a pull to complete it.
+    // A copy's marker gone from this note: just that copy is gone. Its home's: a copy becomes home.
     for (const [id, rec] of Object.entries(this.state.tasks)) {
-      if (rec.path === path && !seenIds.has(id)) {
-        if (!content.includes(`%%td:${id}%%`)) delete this.state.tasks[id];
+      if (seenIds.has(id) || content.includes(`%%td:${id}%%`)) continue;
+      if (rec.copies?.includes(path)) {
+        this.dropCopy(rec, path);
+        continue;
       }
+      if (rec.path !== path || (await this.promoteCopy(rec, id))) continue;
+      if (rec.deleteOnDone && !rec.orphaned && !rec.base.checked) rec.gone ??= Date.now();
+      else delete this.state.tasks[id];
     }
 
     if (!commands.length) {
@@ -615,7 +936,8 @@ export class SyncEngine {
       const realId = mapping[tmp];
       if (!realId) continue; // de-duplicated retry; the next pull brings the project in
       const cmd = commands.find((c) => c.uuid === tmp)!;
-      this.state.projects[realId] = { name: cmd.args.name as string };
+      const parent = cmd.args.parent_id as string | undefined;
+      this.state.projects[realId] = { name: cmd.args.name as string, parentId: parent ? (mapping[parent] ?? parent) : null };
       delete this.state.pendingProjects[key];
     }
     for (const cmd of commands) {
@@ -649,13 +971,24 @@ export class SyncEngine {
       const projectId = pid ? (mapping[pid] ?? pid) : inbox;
       if (!projectId || unknownProject.has(tmp) || this.state.remote[realId]) continue;
       const due = cmd.args.due as { date: string } | undefined;
+      const deadline = cmd.args.deadline as { date: string } | undefined;
       const labels = (cmd.args.labels as string[] | undefined) ?? [];
       const priority = (cmd.args.priority as number | undefined) ?? 1;
-      this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, checked: false, labels, parentId };
+      this.state.remote[realId] = { projectId, priority, due: due?.date ?? null, deadline: deadline?.date ?? null, checked: false, labels, parentId };
     }
     await this.stripRefs(path, applied);
     for (const [tmp, realId] of resolved) if (outdentNew.has(tmp)) outdent.add(realId);
     if (outdent.size) await this.moveOut(path, [...outdent]);
+    // What this push changed, written to the task's other lines, here and in other notes.
+    if (spread.size) {
+      const targets = new Map<string, LineTarget>();
+      for (const [id, title] of spread) {
+        const rec = this.state.tasks[id];
+        if (rec) targets.set(id, { fields: rec.base, title });
+      }
+      const paths = [...targets.keys()].flatMap((id) => this.locations(this.state.tasks[id]));
+      await this.writeLines(targets, paths, opts.skipLine === undefined ? undefined : { path, line: opts.skipLine });
+    }
     await this.syncOrder(path);
 
     await this.save();
@@ -697,7 +1030,7 @@ export class SyncEngine {
       let changed = false;
       for (const [id, a] of applied) {
         const idx = findLineByMarker(lines, id);
-        const parsed = idx >= 0 ? parseTaskLine(lines[idx]) : null;
+        const parsed = idx >= 0 ? parseTaskLine(lines[idx], this.fileDate(path)) : null;
         if (!parsed) continue;
         const task = withTitle(parsed, this.state.tasks[id]?.base.text);
         const appliedLabels = new Set((a.labels ?? []).map(labelKey));
@@ -727,19 +1060,17 @@ export class SyncEngine {
         const idx = findLineByMarker(lines, PENDING + tmp);
         delete this.state.pending[tmp];
         if (idx < 0) continue;
-        const task = parseTaskLine(lines[idx]);
+        const task = parseTaskLine(lines[idx], this.fileDate(path));
         if (!task) continue;
-        // The create carried the line's references, so they've done their job.
-        lines[idx] = serializeTask({
-          ...task,
-          pendingUuid: null,
-          todoistId: realId,
-          projectRef: null,
-          labelRefs: [],
-          priorityRef: null,
-          dueRef: null,
-        });
-        this.state.tasks[realId] = { path, base: { text: task.text, checked: task.checked, due: task.due } };
+        // The create carried the line's references, so they've done their job. With Tasks fields
+        // written, the priority it was created with stays on the line as a Tasks priority.
+        let fields = this.tasksFields() && task.priorityRef ? withLinePriority(task.fields, task.priorityRef) : task.fields;
+        // Now a task: a ➕ date, if Tasks is set to add one to new tasks.
+        if (this.tasksFields() && tasksDateSettings().created && !fields?.created) fields = withDate(fields, "created", isoDate(new Date()));
+        const created = { ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [], priorityRef: null, dueRef: null, fields };
+        lines[idx] = serializeTask(created);
+        this.state.tasks[realId] = { path, base: this.localFields(created) };
+        if (fields?.onCompletion === "delete") this.state.tasks[realId].deleteOnDone = true;
       }
       return lines.join("\n");
     });
@@ -770,7 +1101,7 @@ export class SyncEngine {
   /**
    * Set a synced task's due date, from the due date picker: a date (`YYYY-MM-DD`), words for
    * Todoist to work out (`next friday`, `every month`), or null for none. Then pulls, so the line's
-   * `📅` follows the way any change made in Todoist does. Throws if Todoist can't read the words.
+   * `⏳` follows the way any change made in Todoist does. Throws if Todoist can't read the words.
    */
   async changeDue(id: string, due: { date: string } | { words: string } | null): Promise<boolean> {
     const sent = await this.exclusive(async () => {
@@ -844,13 +1175,54 @@ export class SyncEngine {
       .map(([id]) => id);
   }
 
+  /**
+   * Complete the Todoist tasks of `🏁 delete` lines gone for a while (see TaskRecord.gone): Tasks
+   * deletes such a line when it's completed. One found in another note was moved, not deleted,
+   * and is left linked there.
+   */
+  private async completeDeleted(): Promise<void> {
+    const gone = Object.entries(this.state.tasks).filter(([, r]) => r.gone && Date.now() - r.gone >= GONE_GRACE_MS);
+    if (!gone.length) return;
+    const files = this.vault.markdownFiles();
+    const commands: Command[] = [];
+    for (const [id, rec] of gone) {
+      let found: string | undefined;
+      for (const f of files) {
+        if ((await this.vault.read(f)).includes(`%%td:${id}%%`)) {
+          found = f;
+          break;
+        }
+      }
+      if (found) {
+        rec.path = found;
+        this.dropCopy(rec, found);
+        delete rec.gone;
+      } else {
+        commands.push({ type: "item_close", uuid: makeUuid(), args: { id } });
+      }
+    }
+    if (commands.length) {
+      const res = await this.client.sync({ commands });
+      for (const cmd of commands) {
+        const id = cmd.args.id as string;
+        if (res.sync_status?.[cmd.uuid] !== "ok") continue; // tried again at the next pull
+        delete this.state.tasks[id];
+        this.log(`completed ${id}: its 🏁 delete line was removed`);
+      }
+    }
+    await this.save();
+  }
+
   private async pullInner(): Promise<void> {
+    await this.completeDeleted();
     // Projects saved before archived/parent/order were tracked need one full sync to fill them in, and
     // so do tasks we have no details for, since an incremental sync only returns tasks that changed.
     const stale =
       Object.values(this.state.projects).some((p) => p.parentId === undefined || p.order === undefined) ||
       !this.state.labelsSynced ||
-      !this.state.subtasksSynced;
+      !this.state.subtasksSynced ||
+      (this.tasksFields() && (!this.state.tasksFieldsSynced || !this.state.repeatsSynced)) ||
+      (!!this.state.datesMigrated && !this.state.deadlinesSynced);
     const missing = this.missingDetails();
     // Tried once per session: a completed or deleted task isn't returned, and mustn't force a full sync every time.
     for (const id of missing) this.fetchTried.add(id);
@@ -867,6 +1239,13 @@ export class SyncEngine {
       this.state.subtasks = {};
       this.state.subtasksSynced = true;
     }
+    // Turned on: a full sync writes every task's priority to its line. Turned off: the next time it's
+    // turned on needs one again.
+    this.state.tasksFieldsSynced = this.tasksFields() && (res.full_sync || !!this.state.tasksFieldsSynced);
+    // Likewise each repeating task's `🔁`, which this version is the first to write.
+    this.state.repeatsSynced = this.tasksFields() && (res.full_sync || !!this.state.repeatsSynced);
+    // Lines rewritten for deadlines: a full sync brings every task's deadline to its line.
+    if (res.full_sync && this.state.datesMigrated) this.state.deadlinesSynced = true;
     this.noteSubtasks(res.items ?? []);
     for (const l of res.labels ?? []) {
       if (l.is_deleted) delete this.state.labels[l.id];
@@ -893,7 +1272,9 @@ export class SyncEngine {
     // Any unconfirmed project create has now either arrived above or never happened.
     this.state.pendingProjects = {};
 
+    /** Linked tasks that changed, by home note. */
     const byPath = new Map<string, TodoistItem[]>();
+    const changed: TodoistItem[] = [];
     const pendingResolutions = new Map<string, [string, string][]>();
     /** Linked tasks moved to another parent in Todoist, by note. */
     const movedHere = new Map<string, string[]>();
@@ -922,6 +1303,7 @@ export class SyncEngine {
         projectId: item.project_id,
         priority: item.priority,
         due: dueDate(item.due),
+        deadline: item.deadline?.date ?? null,
         dueString: item.due?.string,
         recurring: item.due?.is_recurring,
         checked: item.checked,
@@ -931,6 +1313,7 @@ export class SyncEngine {
         childOrder: item.child_order,
       };
       byPath.set(rec.path, [...(byPath.get(rec.path) ?? []), item]);
+      changed.push(item);
     }
 
     // Deleting a project deletes its tasks, but Todoist reports only the project, not each task.
@@ -946,23 +1329,7 @@ export class SyncEngine {
 
     for (const [path, pairs] of pendingResolutions) await this.resolvePending(path, pairs);
 
-    const commands: Command[] = [];
-    for (const [path, items] of byPath) {
-      const mtime = this.vault.mtime(path);
-      // Merge against the current content first; only write the note if a line actually changes,
-      // so remote-only changes (priority, labels, project) don't rewrite the file and bump its mtime.
-      let result = this.mergeFile(await this.vault.read(path), items, mtime);
-      if (result.changed) {
-        await this.vault.process(path, (content) => {
-          result = this.mergeFile(content, items, mtime);
-          return result.changed ? result.content : content;
-        });
-      }
-      for (const [id, base] of result.bases) this.state.tasks[id].base = base;
-      for (const c of result.conflicts) this.log(c);
-      commands.push(...result.commands);
-    }
-
+    const commands = await this.mergeItems(changed);
     if (commands.length) await this.client.sync({ commands });
     // Tasks moved to another parent in Todoist: move their lines to match.
     for (const [path, ids] of movedHere) await this.followMoves(path, ids);
@@ -1037,13 +1404,17 @@ export class SyncEngine {
 
     // Each synced task's open, synced subtasks in this note, in note order. Only those Todoist
     // agrees are its subtasks: one just indented under it is moved first, then ordered.
+    // Only tasks at home here, on their first line: a copy's nesting is its own (see TaskRecord.path).
+    const firstLine = new Map<string, number>();
+    for (const { line, task } of tasks) if (task.todoistId && !firstLine.has(task.todoistId)) firstLine.set(task.todoistId, line);
+    const atHome = (id: string, line: number) => this.state.tasks[id]?.path === path && firstLine.get(id) === line;
     const groups = new Map<string, string[]>();
     for (const { line, task } of tasks) {
       const id = task.todoistId;
-      if (!live(id) || task.checked || this.state.remote[id]?.checked) continue;
+      if (!live(id) || !atHome(id, line) || task.checked || this.state.remote[id]?.checked) continue;
       const p = parentLine(lines, line, taskLines);
       const parent = p === null ? null : byLine.get(p)?.todoistId;
-      if (!live(parent) || this.state.remote[id]?.parentId !== parent) continue;
+      if (!live(parent) || !atHome(parent, p!) || this.state.remote[id]?.parentId !== parent) continue;
       groups.set(parent, [...(groups.get(parent) ?? []), id]);
     }
     if (!groups.size) return;
@@ -1169,48 +1540,266 @@ export class SyncEngine {
     }
   }
 
-  /** Pure: three-way merge each pulled item against its line in `content`. */
-  private mergeFile(content: string, items: TodoistItem[], mtime: number) {
-    const lines = content.split("\n");
+  /**
+   * Three-way merge each pulled task against its lines, in its home note and every copy, write the
+   * result to each line that differs, and return the commands for what the notes changed. Between
+   * copies changed differently, the most recently edited note wins (see combinedLocal).
+   */
+  private async mergeItems(items: TodoistItem[]): Promise<Command[]> {
     const commands: Command[] = [];
-    const bases = new Map<string, TaskFields>();
-    const conflicts: string[] = [];
-    let changed = false;
+    const targets = new Map<string, LineTarget>();
+    const paths: string[] = [];
+    const contents = new Map<string, string>();
     for (const item of items) {
       const rec = this.state.tasks[item.id];
-      const idx = findLineByMarker(lines, item.id);
-      if (idx < 0) continue; // moved; the index will re-adopt it on the next push
-      const parsed = parseTaskLine(lines[idx]);
-      if (!parsed) continue;
-      const task = withTitle(parsed, rec.base.text);
-      const local: TaskFields = { text: task.text, checked: task.checked, due: task.due };
-      const remote: TaskFields = { text: item.content, checked: item.checked, due: dueDate(item.due) };
-      const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;
-      const m = merge(rec.base, local, remote, mtime, remoteAt);
-      if (m.conflicts.length) conflicts.push(`Conflict on "${task.text}" (${m.conflicts.join(", ")}); resolved`);
-      if (!isEmpty(m.pull)) {
-        const next = serializeTask({ ...task, ...m.pull });
-        if (next !== lines[idx]) {
-          lines[idx] = next;
-          changed = true;
-        }
+      const found: { task: ParsedTask; mtime: number; path: string }[] = [];
+      for (const p of this.locations(rec)) {
+        if (!contents.has(p)) contents.set(p, await this.readOrEmpty(p));
+        const content = contents.get(p)!;
+        const mtime = this.vault.mtime(p);
+        for (const { task } of findTasks(content, this.fileDate(p))) if (task.todoistId === item.id) found.push({ task: this.readLine(task, rec), mtime, path: p });
+        paths.push(p);
       }
-      if (!isEmpty(m.push)) commands.push(...commandsFor(item.id, m.push));
-      bases.set(item.id, m.merged);
+      if (!found.length) continue; // moved; the index will re-adopt it on the next push
+      const home = found.find((f) => f.path === rec.path)?.task;
+      found.sort((a, b) => b.mtime - a.mtime);
+      const legacy = this.isLegacy(rec);
+      const local = this.combinedLocal(found.map((f) => f.task), rec);
+      const remote = this.remoteFields(item, legacy);
+      const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;
+      const m = merge(rec.base, local, remote, found[0].mtime, remoteAt);
+      if (m.conflicts.length) this.log(`Conflict on "${found[0].task.text}" (${m.conflicts.join(", ")}); resolved`);
+      if (!isEmpty(m.push)) commands.push(...commandsFor(item.id, m.push, this.dueArg(item.id, m.merged)));
+      // Lines from before deadlines synced, rewritten by this pull, get the date as `⏳`, so a `📅` is the
+      // deadline from now on (see readLine).
+      if (legacy && !isEmpty(m.pull)) m.merged.deadline = found[0].task.deadline ?? null;
+      targets.set(item.id, { fields: m.merged, title: rec.base.text, completedAt: item.completed_at, legacy });
+      if (home) this.noteHistory(item, rec, home, m.merged);
+      rec.base = m.merged;
     }
-    return { content: lines.join("\n"), changed, commands, bases, conflicts };
+    await this.writeLines(targets, paths);
+    await this.checkHistory();
+    return commands;
+  }
+
+  /**
+   * This pull moves a repeating task's date on: note that its completions in Todoist are to be kept
+   * as ticked lines (see history.ts). Only with Tasks fields written, and only when Todoist moved
+   * the date: if the line did, as when Tasks ticked it, Tasks has already left its own.
+   */
+  private noteHistory(item: TodoistItem, rec: TaskRecord, home: ParsedTask, merged: TaskFields): void {
+    const from = rec.base.due;
+    const to = merged.due;
+    if (!this.tasksFields() || !item.due?.is_recurring || !from || !to || to <= from || home.due !== from) return;
+    const was = rec.historyDue;
+    rec.historyDue = {
+      from: was && was.from < from ? was.from : from,
+      to,
+      line: was && was.from < from ? was.line : serializeTask(withTitle(home, rec.base.text)),
+      until: Date.now() + HISTORY_WAIT_MS,
+    };
+  }
+
+  /**
+   * Look for the completions in Todoist of repeating tasks it moved on, and keep each as a ticked
+   * line. One not in the activity log yet is looked for again at the next pull, for a while.
+   */
+  private async checkHistory(): Promise<void> {
+    for (const [id, rec] of Object.entries(this.state.tasks)) {
+      const due = rec.historyDue;
+      if (!due) continue;
+      const line = parseTaskLine(due.line);
+      if (!line || !this.tasksFields()) {
+        delete rec.historyDue;
+        continue;
+      }
+      let events: CompletionEvent[];
+      try {
+        const res = await this.client.get<{ results?: CompletionEvent[] }>("activities", {
+          object_id: id,
+          object_event_types: ["item:completed"],
+          limit: 100,
+        });
+        events = res.results ?? [];
+      } catch (e) {
+        this.log(`couldn't read Todoist's activity log for "${line.text}", so its completions there get no ticked lines: ${(e as Error).message}`);
+        delete rec.historyDue;
+        continue;
+      }
+      const history = historyLines(line, id, events, due.from, due.to);
+      if (history.length) {
+        await this.addHistory(id, history);
+        this.log(`"${line.text}": ${history.length} completion(s) in Todoist, kept as ticked lines`);
+        delete rec.historyDue;
+      } else if (Date.now() > due.until) {
+        this.log(`"${line.text}": no completion in Todoist's activity log from ${due.from} to ${due.to}, so no ticked line`);
+        delete rec.historyDue;
+      } else {
+        this.log(`"${line.text}": Todoist's activity log has ${events.length} event(s), none a completion from ${due.from} to ${due.to} yet; looking again at the next pull`);
+      }
+    }
+  }
+
+  /**
+   * Put history lines next to the task's line in its home note, newest nearest: below it and its
+   * subtasks, or above it, as Tasks places a repeating task's lines.
+   */
+  private async addHistory(id: string, history: string[]): Promise<void> {
+    const rec = this.state.tasks[id];
+    if (!rec) return;
+    const above = !!this.settings().historyAbove;
+    await this.vault.process(rec.path, (content) => {
+      const lines = content.split("\n");
+      const at = findLineByMarker(lines, id);
+      if (at < 0) return content;
+      if (above) lines.splice(at, 0, ...[...history].reverse());
+      // Below its subtasks, so they stay under it.
+      else lines.splice(blockEnd(lines, at) + 1, 0, ...history);
+      return lines.join("\n");
+    });
+  }
+
+  /**
+   * A task's fields from its lines (more than one when it has copies), as `localFields` gives one
+   * line's: for each field, the first line whose value differs from the last sync, or the first
+   * line's. Lines come most recently edited first, so that one's change wins.
+   */
+  private combinedLocal(tasks: ParsedTask[], rec: TaskRecord): TaskFields {
+    const legacy = this.isLegacy(rec);
+    const all = tasks.map((t) => this.localFields(t, legacy));
+    const out = { ...all[0] };
+    const base = (k: keyof TaskFields) =>
+      k === "priority" ? (rec.base.priority ?? 4) : k === "deadline" || k === "recurrence" ? (rec.base[k] ?? null) : rec.base[k];
+    for (const k of Object.keys(out) as (keyof TaskFields)[]) {
+      const changed = all.find((f) => f[k] !== undefined && f[k] !== base(k));
+      if (changed) (out as Record<string, unknown>)[k] = changed[k];
+    }
+    return out;
+  }
+
+  /** The notes with a line for a task: its home, then its copies. */
+  private locations(rec: TaskRecord | undefined): string[] {
+    return rec ? [rec.path, ...(rec.copies ?? []).filter((p) => p !== rec.path)] : [];
+  }
+
+  private async readOrEmpty(path: string): Promise<string> {
+    try {
+      return (await this.vault.read(path)) ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * A line for a task found in `path`, a note other than its home: a copy if its home still has
+   * the task, otherwise the task moved here, which becomes its home.
+   */
+  private async placeLine(rec: TaskRecord, id: string, path: string): Promise<void> {
+    if ((await this.readOrEmpty(rec.path)).includes(`%%td:${id}%%`)) {
+      if (!rec.copies?.includes(path)) rec.copies = [...(rec.copies ?? []), path];
+    } else {
+      rec.path = path;
+      this.dropCopy(rec, path);
+    }
+  }
+
+  private dropCopy(rec: TaskRecord, path: string): void {
+    rec.copies = rec.copies?.filter((p) => p !== path);
+    if (!rec.copies?.length) delete rec.copies;
+  }
+
+  /** The task's line gone from its home: the first copy still in its note becomes home. False if none is. */
+  private async promoteCopy(rec: TaskRecord, id: string): Promise<boolean> {
+    while (rec.copies?.length) {
+      const next = rec.copies[0];
+      this.dropCopy(rec, next);
+      if ((await this.readOrEmpty(next)).includes(`%%td:${id}%%`)) {
+        rec.path = next;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Write tasks' synced fields to each of their lines in `paths` that differs, leaving the line
+   * being edited (`skip`) alone. A note is only written if a line in it changes.
+   */
+  private async writeLines(targets: Map<string, LineTarget>, paths: Iterable<string>, skip?: { path: string; line: number }): Promise<void> {
+    if (!targets.size) return;
+    for (const p of new Set(paths)) {
+      const rewrite = (content: string): string | null => {
+        const lines = content.split("\n");
+        let changed = false;
+        for (const { line, task } of findTasks(content, this.fileDate(p))) {
+          const target = task.todoistId ? targets.get(task.todoistId) : undefined;
+          if (!target || (skip?.path === p && skip.line === line)) continue;
+          const next = this.syncedLine(task, target);
+          if (next !== null && next !== lines[line]) {
+            lines[line] = next;
+            changed = true;
+          }
+        }
+        return changed ? lines.join("\n") : null;
+      };
+      if (rewrite(await this.readOrEmpty(p)) === null) continue;
+      await this.vault.process(p, (content) => rewrite(content) ?? content);
+    }
+  }
+
+  /** A task's line with its synced fields, or null if it already has them. */
+  private syncedLine(parsed: ParsedTask, target: LineTarget): string | null {
+    const f = target.fields;
+    let t = withTitle(parsed, target.title);
+    if (t === parsed) t = withTitle(parsed, f.text);
+    if (target.legacy && t.deadline && !t.due) t = { ...t, due: t.deadline, deadline: null };
+    let fields = t.fields;
+    let differs = t.text !== f.text || t.checked !== f.checked || t.due !== f.due;
+    if (f.deadline !== undefined && (t.deadline ?? null) !== f.deadline) differs = true;
+    if (this.tasksFields()) {
+      if (f.priority !== undefined && linePriority(t) !== f.priority) {
+        fields = withLinePriority(fields, f.priority);
+        differs = true;
+      }
+      if (f.checked && !t.checked) fields = withDoneDate(fields, isoDate(target.completedAt ? new Date(target.completedAt) : new Date()));
+      if (!f.checked && t.checked) fields = withDate(withDoneDate(fields, null), "cancelled", null);
+      const rule = t.fields?.recurrence;
+      const lineRule = rule ? canonicalRule(rule) : null;
+      if (f.recurrence !== undefined && lineRule !== undefined && lineRule !== f.recurrence) {
+        fields = { ...fields };
+        if (f.recurrence) fields.recurrence = f.recurrence;
+        else delete fields.recurrence;
+        differs = true;
+      }
+    }
+    if (!differs) return null;
+    const next: ParsedTask = { ...t, text: f.text, checked: f.checked, due: f.due, fields };
+    if (f.deadline !== undefined) next.deadline = f.deadline;
+    return serializeTask(next);
   }
 
   // ---------------------------------------------------------------- vault events
 
   onRename(oldPath: string, newPath: string): void {
-    for (const rec of Object.values(this.state.tasks)) if (rec.path === oldPath) rec.path = newPath;
+    for (const rec of Object.values(this.state.tasks)) {
+      if (rec.path === oldPath) rec.path = newPath;
+      if (rec.copies) rec.copies = rec.copies.map((p) => (p === oldPath ? newPath : p));
+    }
     for (const p of Object.values(this.state.pending)) if (p.path === oldPath) p.path = newPath;
     void this.save();
   }
 
   onDelete(path: string): void {
-    for (const [id, rec] of Object.entries(this.state.tasks)) if (rec.path === path) delete this.state.tasks[id];
+    for (const [id, rec] of Object.entries(this.state.tasks)) {
+      if (rec.copies?.includes(path)) this.dropCopy(rec, path);
+      if (rec.path !== path) continue;
+      // Its first copy becomes home; if that note turns out not to have it, its next push says so.
+      const next = rec.copies?.[0];
+      if (next) {
+        rec.path = next;
+        this.dropCopy(rec, next);
+      } else delete this.state.tasks[id];
+    }
     void this.save();
   }
 }
@@ -1253,11 +1842,17 @@ function pickFields(src: TaskFields, keys: Partial<TaskFields>): Partial<TaskFie
   return out;
 }
 
-export function commandsFor(id: string, change: Partial<TaskFields>): Command[] {
+/**
+ * Todoist commands for a change to a task's fields. `due` is the Todoist due object for its date
+ * and repeat as synced (see SyncEngine.dueArg), sent if either changed; without it, the date alone.
+ */
+export function commandsFor(id: string, change: Partial<TaskFields>, due?: Record<string, unknown> | null): Command[] {
   const cmds: Command[] = [];
   const args: Record<string, unknown> = { id };
   if ("text" in change) args.content = change.text;
-  if ("due" in change) args.due = change.due ? { date: change.due } : null;
+  if ("due" in change || "recurrence" in change) args.due = due !== undefined ? due : change.due ? { date: change.due } : null;
+  if (change.priority !== undefined) args.priority = toApiPriority(change.priority);
+  if (change.deadline !== undefined) args.deadline = change.deadline ? { date: change.deadline } : null;
   if (Object.keys(args).length > 1) cmds.push({ type: "item_update", uuid: makeUuid(), args });
   if ("checked" in change) {
     cmds.push({ type: change.checked ? "item_close" : "item_uncomplete", uuid: makeUuid(), args: { id } });

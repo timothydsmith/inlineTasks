@@ -7,6 +7,46 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
+### Added
+- Tasks plugin fields stay on the line and out of the Todoist title: `🛫 ➕ ✅ ❌` dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔`, `🏁`, and a `^block-link` at the end. Tasks' other spellings of the due date, `📆` and `🗓`, are read as `📅`.
+- **Write Tasks plugin fields** setting, off by default. When on:
+  - Each task's Todoist priority is written on its line as a Tasks priority (🔺 p1, ⏫ p2, 🔼 p3, nothing for p4), and changing either one changes the other.
+  - `p1`–`p4` typed on a line, or a priority picked on the chip, becomes the Tasks priority.
+  - A task completed in Todoist gets `✅` and the date it was completed, and one ticked in the note gets today's date. Unticking removes the date.
+  - A `🔁` repeat makes the Todoist task repeat, from the line's date, and a repeating Todoist task gets a `🔁`. Changing or removing either changes the other. Rules only one side understands stay where they were written.
+  - Imported tasks come with their priority and repeat.
+  - A task cancelled in the note gets `❌` and today's date, following Tasks' **Set cancelled date on every cancelled task**. Reopening it removes the date.
+  - With Tasks' **Set created date on every added task** on, new tasks get `➕` and today's date, and imported tasks the date they were added in Todoist.
+- **Projects and labels note** setting, off by default. When on, the plugin keeps a note listing your Todoist projects and labels, how to write a line that files a task in them, and your folder mappings and excluded folders, so agents and scripts can add tasks to your notes without a Todoist connection of their own. It's rewritten whenever a sync changes it. It goes in the vault's config folder (`.obsidian/todoist-projects-and-labels.md`) unless you set another location.
+- Deadlines sync both ways as `📅`, the Tasks plugin's due date. The chip shows a task's deadline after a ◎.
+- **Export tasks to JSON** command: writes the open and completed tasks in projects you pick (archived ones and the Inbox included), their completions and deletions from Todoist's activity log, and the lines each task is linked to in your notes, with what the export covers.
+- The same Todoist task can be on lines in several notes, or several times in one: copy a synced line, marker and all. Every line syncs both ways, and a change on one reaches the others. The note it was created or first linked in is its home, which decides its nesting; the chip on a copy shows a house that opens the home note.
+- Tasks plugin query results show each task's chip after its text.
+- More repeats sync with Todoist: the nth or last weekday of the month (`every month on the 2nd Wednesday`, Todoist's `every 2nd wed`), a date each year (`every January on the 15th`), and every other week on a day (`every 2 weeks on Monday`, Todoist's `every other monday`).
+- With the Tasks plugin's **Use filename as Scheduled date for undated tasks** on, a task in a note named for a date, without a date of its own, gets that date in Todoist, as Tasks schedules it.
+- With **Write Tasks plugin fields** on, a repeating task completed in Todoist leaves a ticked line in the note for each completion, as ticking it with the Tasks plugin does.
+- The Tasks plugin's global filter, such as `#task`, is kept out of Todoist titles and added to lines the plugin writes. The **Only lines with Tasks' global filter** setting makes Todoist tasks only from lines that have it.
+- `filter by function !inlineTasks.isCopy(task)` in a Tasks query lists each task once, at its home, leaving out its copies.
+- Nested projects: `#[Work/Clients/Acme]` files a task in Acme, under Clients, under Work, creating any of them that doesn't exist. The project menus match paths, offer to create nested projects, and name a project by its path when another has the same name.
+
+### Changed
+- The Todoist date is written as `⏳`, the Tasks plugin's scheduled date, instead of `📅`, which is now the deadline. Each device rewrites existing lines once, the first time it starts this version.
+- The chip's project picker can move a task to a project that shares its name with another, naming it by its path.
+- The `%%td:…%%` marker goes after the task's text and before its dates and other fields, so the Tasks plugin can read them. Each device moves the marker on existing lines once, the first time it starts this version.
+- Only `[x]`, `[X]` and `[-]` (cancelled) complete the Todoist task. Other statuses, such as Tasks' `[/]` (in progress), leave it open and are kept on the line. New tasks are made from `[ ]` and `[/]` lines only.
+
+### Fixed
+- A task ticked in a Tasks query or in reading view, or changed in Tasks' edit dialog, waited two minutes to sync, as if changed on another device. It now syncs straight away.
+- In reading view with the Tasks plugin, chips disappeared when Tasks drew its own version of each line.
+- Custom statuses set up in the Tasks plugin are read as Tasks reads them: a custom done or cancelled status completes the Todoist task (cancelled without a `✅` date), a custom to-do or in-progress status starts one, and a non-task status does neither.
+- Completing a task with `🏁 delete` in the Tasks plugin, which deletes its line, left the Todoist task open. Now it's completed at the next sync, unless the line turns up in another note.
+- Ticking a repeating task with the Tasks plugin, which adds a line for the next occurrence with the same marker, completed the Todoist task and then reopened it. Now it completes that occurrence in Todoist and moves the task to the new line's date; the ticked line loses its marker and stays as a record.
+- Changing the date on the line of a task that repeats in Todoist ended the repeat. It now moves the next occurrence.
+- Imported tasks come with their deadline.
+- With the Tasks plugin installed, typing `#[` on a task line opened Tasks' menu instead of the project menu.
+
 ## [0.3.0] - 2026-11-06
 
 ### Added
@@ -64,7 +104,8 @@ First release. Needs Obsidian 1.8.7 or later.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
-[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.3.0...dev
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.4.0...dev
+[0.4.0]: https://github.com/timothydsmith/inlineTasks/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/timothydsmith/inlineTasks/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/timothydsmith/inlineTasks/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/timothydsmith/inlineTasks/releases/tag/0.1.0

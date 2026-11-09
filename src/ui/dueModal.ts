@@ -33,7 +33,7 @@ export class DueModal extends SuggestModal<Choice> {
     this.setPlaceholder("Type a date, such as next friday or every month…");
     this.setInstructions([
       { command: "↑↓", purpose: "choose" },
-      { command: "↵", purpose: "set due date" },
+      { command: "↵", purpose: "set date" },
       { command: "esc", purpose: "dismiss" },
     ]);
   }

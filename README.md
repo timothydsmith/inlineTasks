@@ -3,24 +3,24 @@
 An Obsidian plugin that mirrors every checkbox in your notes to Todoist with **two-way sync**, and shows each synced task inline as a chip (like Jira issues in Confluence).
 
 ```markdown
-- [ ] Call Bob about the contract 📅 2026-11-10 %%td:6Xg4Qm2pR%%
+- [ ] Call Bob about the contract %%td:6Xg4Qm2pR%% ⏳ 2026-11-10 📅 2026-11-14
 ```
 
 renders as
 
 > ☐ Call Bob about the contract `■ #Work  Nov 10  P1`
 
-**Status:** pre-release (0.1.0). Tested against the live Todoist API on Obsidian desktop (Windows) and Android, with Obsidian Sync between them. Not yet tested on iOS. See [CHANGELOG.md](CHANGELOG.md).
+**Status:** pre-release (0.4.0). Tested against the live Todoist API on Obsidian desktop (Windows) and Android, with Obsidian Sync between them. Not yet tested on iOS. See [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
-- **Every open checkbox** in an eligible note becomes a Todoist task. The plugin appends a hidden `%%td:<id>%%` marker to the line.
-- **Two-way sync** of the task text, its completion and its due date (`📅 YYYY-MM-DD`, compatible with the Tasks plugin):
+- **Every open checkbox** in an eligible note becomes a Todoist task. The plugin adds a hidden `%%td:<id>%%` marker to the line, after the task's text and before any dates.
+- **Two-way sync** of the task text, its completion, its date and its deadline (see [Dates and deadlines](#dates-and-deadlines)):
   - Tick a task on your phone and the checkbox in your note is ticked.
   - Edit the text in Obsidian and Todoist updates.
   - If both sides edited the same field, the most recent edit wins.
-- **The chip** shows project, due date (red when overdue, ↻ when recurring), priority and labels.
-  - Click it to open the task in Todoist. Click the project to move the task to another one, a label to change its labels, the priority or due date to change it, or the `↳` subtask count to add missing subtasks.
+- **The chip** shows project, date (red when overdue, ↻ when recurring), deadline, priority and labels.
+  - Click it to open the task in Todoist. Click the project to move the task to another one, a label to change its labels, the priority or date to change it, or the `↳` subtask count to add missing subtasks.
   - To see or edit the raw marker, move the cursor onto it with the arrow keys, or click just beside the chip.
 - **Never deletes anything:**
   - Deleting a line in Obsidian only unlinks the task.
@@ -39,7 +39,8 @@ renders as
 | Chip | Meaning |
 |---|---|
 | `#Work`, `#Inbox` | Todoist project, in its Todoist colour. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
-| `Nov 10`, `Today`, `Tomorrow` | Due date; red when overdue, `↻` when recurring. Click it to change it; see [Changing a due date from the chip](#changing-a-due-date-from-the-chip). |
+| `Nov 10`, `Today`, `Tomorrow` | Date; red when overdue, `↻` when recurring. Click it to change it; see [Changing a date from the chip](#changing-a-date-from-the-chip). |
+| ◎ `Nov 14` | Deadline; red when overdue. Change it with the line's `📅`. |
 | `P1` `P2` `P3` | Priority (P4 is not shown). Click it to change it; see [Setting a priority](#setting-a-priority). |
 | `@label`, or a tag icon and count | Todoist labels: the label itself when there's one, or how many when there are more (hover to see them). Click to change the task's labels; see [Labels](#labels). |
 | `↳ 2` | Open subtasks in Todoist, whether or not they're in a note (hidden when there are none). Only direct subtasks count, not theirs. Click it to add the ones that aren't in a note yet; see [Subtasks](#subtasks). |
@@ -60,7 +61,15 @@ When the task next syncs, it's filed in that project and the reference is remove
 - **New task:** created directly in that project.
 - **Already-synced task:** moved to that project. Add another reference later to move it again, or click the project on the chip and pick one: that adds the reference for you and syncs straight away.
 - **Project doesn't exist:** keep typing the new name, and the menu offers **Create project “…”**. A reference you type by hand to a missing project also creates it.
-- **Matching** ignores case and extra spaces. Archived projects are skipped, so naming one creates a new active project with the same name.
+- **Nested projects:** name a project by its path, with `/` between the names:
+
+  ```markdown
+  - [ ] Draft the proposal #[Work/Clients/Acme]
+  ```
+
+  This files the task in Acme, under Clients, under Work. Any of them that doesn't exist is created in its place, and the menu says which. The first name can be a project at any level, so `#[Clients/Acme]` works too. A project whose own name contains a `/` still matches by that name first.
+- **Projects with the same name:** the menus and the chip name such a project by its path, such as `#[Home/Admin]`, so the task goes to the one you picked.
+- **Matching** ignores case and extra spaces, also around `/`. Archived projects are skipped, so naming one creates a new active project with the same name.
 - **Timing:** like new tasks, the reference is applied once you move off the line, or straight away with **Sync now**.
 - **Precedence:** a reference beats folder mappings and `todoist_project:` frontmatter.
 - **Ordinary tags are unaffected.** Only `#[` opens the project menu, so `#tags` get Obsidian's usual tag suggestions and never file a task.
@@ -107,20 +116,34 @@ When the task next syncs, its priority is set and the word is removed from the l
 - **In a title:** a separate `p1`–`p4` word is always read as a priority, so "Review p2 draft" becomes "Review draft" at p2. Write it another way, such as "Review P-2 draft", to keep it. This also applies to a title changed in Todoist: it's read on the next sync from this note.
 - **Timing:** like project and label references, it's applied once you move off the line, or straight away with **Sync now**.
 
-### Changing a due date from the chip
+### Dates and deadlines
+
+Todoist has two dates, and so does the Tasks plugin. They pair up like this:
+
+| On the line | Todoist | Tasks plugin |
+|---|---|---|
+| `⏳ 2026-11-10` | Date: when you plan to do it | Scheduled date |
+| `📅 2026-11-14` | Deadline: when it must be done | Due date |
+
+- **Both sync both ways.** Change either on the line or in Todoist and the other side follows. Delete one from the line to remove it in Todoist.
+- **Words** such as `friday` set the date (`⏳`), as in Todoist's Quick Add. Type a deadline as `📅 YYYY-MM-DD`.
+- **The chip** shows the date, and the deadline after a ◎. Clicking the date changes it; to change the deadline, edit the line's `📅`.
+- **Lines from earlier versions** wrote the Todoist date as `📅`. Each device rewrites those as `⏳` once, the first time it starts this version, and then fetches every task's deadline from Todoist.
+
+### Changing a date from the chip
 
 Click the date on a task's chip to open the date picker, like Todoist's scheduler:
 
 - **Quick choices:** Today, Tomorrow, This weekend (Saturday; Next weekend at the weekend), Next week (Monday), and No date. Each shows the day it means.
 - **Anything else:** type it, such as `next friday`, `20 nov`, `in 3 days` or `every month`, and choose **Set to “…”**. Todoist works out the date, as its Quick Add does, so this takes more than the words a line understands.
-- **Applied straight away:** the task's date changes in Todoist, and the line's `📅` follows a moment later. It needs a connection.
+- **Applied straight away:** the task's date changes in Todoist, and the line's `⏳` follows a moment later. It needs a connection.
 - **Repeating tasks:** picking a date or No date ends the repeat, unlike rescheduling in Todoist, and the picker says so. Type `every …` to set a new one.
 
 A task without a date has none on its chip to click: type the date on its line instead, as below.
 
-### Setting a due date in words
+### Setting a date in words
 
-Instead of typing `📅 YYYY-MM-DD`, write the date in words anywhere on a checkbox line:
+Instead of typing `⏳ YYYY-MM-DD`, write the date in words anywhere on a checkbox line:
 
 ```markdown
 - [ ] Send the invoice next friday
@@ -128,7 +151,7 @@ Instead of typing `📅 YYYY-MM-DD`, write the date in words anywhere on a check
 - [ ] Renew passport 15/11
 ```
 
-When the task next syncs, the words are sent to Todoist, which works out the date the way its Quick Add does. A few seconds later the date comes back, and the words are replaced on the line by `📅 YYYY-MM-DD`.
+When the task next syncs, the words are sent to Todoist, which works out the date the way its Quick Add does. A few seconds later the date comes back, and the words are replaced on the line by `⏳ YYYY-MM-DD`.
 
 | You can write | Means |
 |---|---|
@@ -138,11 +161,99 @@ When the task next syncs, the words are sent to Todoist, which works out the dat
 | `every day`, `every weekday`, `every week`, `every month`, `every year`, `every monday` … | A repeating task (↻ on the chip) |
 | `15/11`, `15/11/27`, `15/11/2027` | That date, read in your Todoist date format (Settings → General) |
 
-- **New or synced tasks:** a new task is created with that date, and a synced task's date is changed. Words beat a `📅` on the same line.
+- **New or synced tasks:** a new task is created with that date, and a synced task's date is changed. Words beat a `⏳` on the same line.
 - **Phrases of their own:** each must be separate words. Weekdays are full names only, so "sun", "sat" and "wed" are left alone, as are "Fridays" and "15/11x". The last date on the line wins.
 - **In a title:** on a line you type, a separate date word is read as a date, so "Call Bob today about it" becomes "Call Bob about it", due today. The same goes for `24/7` or `1/2`. Write it another way to keep it, such as "Call Bob (today) about it".
 - **Titles from Todoist are kept:** once a task is synced, the words of its title stay part of the title. A task renamed in Todoist to "Call Bob today", or imported with that title, keeps "today" in its title, and the same goes for `p1` or `@home` in a title. Only words typed after the title are read as references. If you edit the title in the middle of the line, the whole line is read again, as a new line would be.
 - **Timing:** like other references, it's applied once you move off the line, or straight away with **Sync now**. It needs a connection, since Todoist works out the date.
+
+### Using it with the Tasks plugin
+
+Lines are written so the [Tasks plugin](https://github.com/obsidian-tasks-group/obsidian-tasks) can read them. Tasks reads its fields from the end of the line, so the marker goes before them:
+
+```markdown
+- [ ] Water the plants %%td:6Xg4Qm2pR%% ⏫ 🔁 every week ⏳ 2026-11-08 📅 2026-11-10
+```
+
+- **Tasks' fields stay on the line and out of the Todoist title:** `🛫` start, `➕` created, `✅` done and `❌` cancelled dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔` and `🏁`, and a `^block-link` at the end. When the plugin rewrites a line, it writes them in the order Tasks does.
+- **`⏳` and `📅` sync** with Todoist's date and deadline (see [Dates and deadlines](#dates-and-deadlines)). The other dates are kept in the note only.
+- **Repeating tasks** stay one task in Todoist, even when Tasks adds a line for the next occurrence; see [Repeating tasks](#repeating-tasks).
+- **Priorities and done dates:** turn on **Write Tasks plugin fields** in settings so Tasks queries can use them:
+  - Each task's Todoist priority is written on its line as a Tasks priority, and changing either one changes the other. Todoist has four priorities and Tasks six, so they pair up like this:
+
+    | Todoist | Tasks |
+    |---|---|
+    | p1 | 🔺 highest |
+    | p2 | ⏫ high |
+    | p3 | 🔼 medium |
+    | p4 | normal (nothing written), 🔽 low or ⏬ lowest |
+
+  - `p1`–`p4` typed on a line, or a priority picked on the chip, is written as the Tasks priority.
+  - A task completed in Todoist gets `✅` and the date it was completed. One ticked in the note gets today's date, unless Tasks already added one. Unticking removes the date. Cancelled `[-]` tasks don't get one.
+  - A task cancelled in the note gets `❌` and today's date, as Tasks adds when you cancel one, unless Tasks' **Set cancelled date on every cancelled task** is off. Reopening it, here or in Todoist, removes the date.
+  - If Tasks' **Set created date on every added task** is on, a line that becomes a task gets `➕` and today's date, and an imported task gets the date it was added in Todoist. Off, which is Tasks' default, no `➕` is written.
+  - A `🔁` repeat makes the Todoist task repeat, and a repeating Todoist task gets a `🔁`.
+  - Turning it on runs a full sync, which writes every open task's priority and repeat to its line. Tasks completed before then don't get a done date.
+- **Statuses** follow your Tasks settings, including custom statuses:
+
+  | Tasks status type | Synced task | Line not yet synced |
+  |---|---|---|
+  | Done, such as `[x]` | Completes it, with a `✅` date if fields are written | Not sent |
+  | Cancelled, such as `[-]` | Completes it, with a `❌` date instead of `✅` if fields are written | Not sent |
+  | To do or in progress, such as `[ ]` and `[/]` | Leaves it open | Becomes a Todoist task |
+  | Non-task | Leaves it open | Not sent |
+
+  Without the Tasks plugin, `[x]`, `[X]` and `[-]` complete the task, and new tasks are made from `[ ]` and `[/]` lines. A status Tasks doesn't define keeps that meaning (`[X]` is done). A task Todoist reopens goes back to `[ ]`, and one Todoist completes becomes `[x]`.
+- **`🏁 delete`:** Tasks deletes such a line when you complete the task. The plugin completes its Todoist task at the first pull at least 30 seconds later (pulls run every 5 minutes by default), unless the line has turned up in another note by then. Deleting a `🏁 delete` line yourself does the same. `🏁 keep` and lines without `🏁` are only unlinked when deleted; their Todoist task is left as it is.
+- **Dates from note names:** with Tasks' **Use filename as Scheduled date for undated tasks** on, a task in a note named for a date, such as `Daily/2026-11-09.md`, with no `⏳`, `📅` or `🛫` date of its own, is scheduled on that date. Its Todoist task gets the same date, and the line stays as it is. A different date set in Todoist is written to the line as `⏳`. The plugin reads the name as Tasks does, with Tasks' folders and date format. Lines already synced get the date in Todoist the next time their note syncs; removing the date in Todoist puts it back, since the note still gives it.
+- **Global filter:** if you've set one in Tasks, such as `#task`, it's kept out of Todoist titles (`- [ ] #task Buy milk` is "Buy milk" in Todoist) and stays where it was on the line. Lines the plugin writes, such as imported tasks, get it at the start, as Tasks writes it. Turn on **Only lines with Tasks' global filter** to make Todoist tasks only from lines that have it, as only those are tasks to Tasks; lines already synced keep syncing either way. A task synced before the plugin knew the filter loses it from its Todoist title the next time its note syncs.
+- **Query results, reading view and the edit dialog:** ticking a task in a Tasks query, in reading view, or editing it in Tasks' edit dialog syncs like an edit on its line. Tasks' query results and its reading view show each task's chip after its text. A query result gets no chip if it can't be told apart from another Todoist task with the same text, status and note.
+- **Lines from earlier versions** had the marker last, which hides their fields from Tasks. Each device moves it in front of the fields once, the first time it starts this version, and any line it missed moves the next time its note syncs.
+
+#### Repeating tasks
+
+A repeating task is one task in Todoist, whichever side it repeats from:
+
+- **Ticked with Tasks:** Tasks adds a line for the next occurrence and keeps the ticked one. The plugin completes that occurrence in Todoist and moves the task to the new line's date. The marker stays on the new line; the ticked line loses it and stays in the note as a record.
+
+  ```markdown
+  - [ ] Water the plants %%td:6Xg4Qm2pR%% 🔁 every week ⏳ 2026-11-17
+  - [x] Water the plants 🔁 every week ⏳ 2026-11-10 ✅ 2026-11-10
+  ```
+
+- **Completed in Todoist,** or ticked in the note without Tasks: Todoist moves it to its next date, and the line unticks with that date. With **Write Tasks plugin fields** on, each completion is also kept as a ticked line, like the one Tasks leaves, with the date of the occurrence completed and a `✅` date of when: below the task and its subtasks, or above it if Tasks puts the next occurrence on the line below. The plugin reads these from Todoist's activity log, which can take a moment to record a completion, so it looks again at later pulls for up to 15 minutes. If your Todoist plan doesn't keep an activity log, no ticked line is added.
+- **With Write Tasks plugin fields on,** the repeat itself syncs: a `🔁` on a line makes the Todoist task repeat, from the line's `⏳` date, and a repeat set in Todoist is written as `🔁`. Changing or removing either one changes the other.
+- **Rules both understand** are synced: `every day`, `every 3 days`, `every weekday`, `every week`, `every 2 weeks`, `every week on Monday, Friday`, `every month`, `every month on the 15th`, `every month on the last`, `every year`, and any of these `when done` (Todoist's `every!`). Also, without `when done`: `every month on the 2nd Wednesday` or `on the last Friday` (Todoist's `every 2nd wed`, `every last friday`), `every January on the 15th` (`every jan 15th`), and `every 2 weeks on Monday` (`every other monday`). Others, such as `every 3 weeks on Monday` or `every first workday`, stay where they were written: the line or Todoist. A start or end date and a time in Todoist's repeat aren't written to the line.
+- **Changing the date** on the line moves the next occurrence and keeps the repeat.
+
+### The same task in several notes
+
+Copy a synced line, marker and all, into another note (or elsewhere in the same note), and both lines are the same Todoist task:
+
+```markdown
+<!-- Projects/Garden.md, its home -->
+- [ ] Plant bulbs %%td:6Xg4Qm2pR%% ⏳ 2026-11-14
+
+<!-- Daily/2026-11-09.md, a copy -->
+- [ ] Plant bulbs %%td:6Xg4Qm2pR%% ⏳ 2026-11-14
+```
+
+- **Every line stays in step:** edit the text, tick it, or change its date, deadline, priority or repeat on any line, and Todoist and the other lines follow. A change made in Todoist reaches every line.
+- **Its home note** is where it was created, imported or first linked. The home line decides its nesting: indenting or moving a copy doesn't move the task in Todoist, a copy's subtasks aren't kept in order, and moves made in Todoist only move the home line. New subtasks typed under a copy are still created as its subtasks.
+- **The chip on a copy** shows a house instead of the red square. Click the house to open the home note at the task's line.
+- **References** typed on a copy, such as `#[Project]` or `@label`, work on the first line of the task in each note.
+- **Deleting a line** only unlinks that line. Deleting the home line makes another copy the home; the task is unlinked once its last line is gone. Moving the home line to another note moves its home there.
+- **In Tasks queries,** every line shows. To list each task once, at its home, add this line to the query:
+
+  ````markdown
+  ```tasks
+  not done
+  filter by function !inlineTasks.isCopy(task)
+  ```
+  ````
+
+  `isCopy` is true for a line in another note than its task's home, or after the task's first line in the home note. Lines without a marker always show. Tasks runs JavaScript in queries only once it's turned on in Tasks' settings; read Tasks' page on [JavaScript in Tasks Queries](https://publish.obsidian.md/tasks/Scripting/JavaScript+in+Tasks+Queries) first.
+- **Changed on two lines at once,** before either synced: for each field, the note edited most recently wins.
 
 ### Subtasks
 
@@ -194,6 +305,7 @@ Each device pushes the changes made on it:
 - **Typed here:** a change made in this device's editor is pushed within seconds.
 - **Arrived from elsewhere:** a change delivered by Obsidian Sync, OneDrive or another app is pushed only after the note has been unchanged for 2 minutes. By then the device you typed on has usually created the task, and its marker has synced across, so nothing is created twice and half-typed lines from the other device are never created.
 - **Written by a script or agent:** notes written directly to disk count as arriving from elsewhere, so their tasks appear in Todoist about 2 minutes later.
+- **Telling an agent your projects and labels:** turn on **Projects and labels note** (see [Notes for agents](#notes-for-agents)).
 - **Who creates those:** after the wait, edits to tasks that are already linked are pushed by whichever device sees them. New checkboxes that arrived from elsewhere are created only by devices with **Create tasks for changes from other devices or apps** turned on. It's on for desktop and off for mobile by default, so a note written by an agent is created once, not once per device. Keep it on for exactly one device. If it's on for none, tasks written by a script won't be created until you edit the line.
 
 Creation is also crash- and retry-safe:
@@ -201,6 +313,33 @@ Creation is also crash- and retry-safe:
 2. The same uuid is used as the Todoist command id, so Todoist de-duplicates a retried create.
 
 If you still see duplicates, for example from editing the same note on two devices at once, turn off **This device creates tasks** on secondary devices. That setting is stored per device.
+
+### Notes for agents
+An agent or script that writes tasks into your notes doesn't need its own Todoist connection: it writes checkbox lines with references, and the plugin files them. To tell it which projects and labels exist, turn on **Projects and labels note** in settings. The plugin then keeps a note with:
+
+- your active projects as `#[Name]` references, nested as in Todoist, and your labels as `@label` references,
+- how to write a line with a project, labels, a priority and a due date,
+- your folder mappings and excluded folders.
+
+It's rewritten whenever a sync brings a change, so it follows projects and labels added or renamed in Todoist. Don't edit it: changes are overwritten. Its frontmatter has `todoist: false`, so its example line never becomes a task.
+
+- **Where it goes:** `.obsidian/todoist-projects-and-labels.md` (in your vault's config folder) unless you set **Projects and labels note location**. Set a path like `Agents/Todoist.md` to put it with your notes instead.
+- **In the config folder:** the note stays out of Obsidian's file list, search and graph, but also out of reach of agents that read the vault through Obsidian (such as one using a REST API plugin), and of search tools that skip hidden folders by default. Give the agent its path, for example in its instructions file.
+- **Each device writes it:** with the setting on and the note in a synced folder, every device writes the same text, and only when it changes.
+
+### Exporting tasks
+**Export tasks to JSON** writes a snapshot of your Todoist tasks to a file, for reconciling them with your notes (by hand or with an agent). Pick the projects to include, active or archived, including the Inbox. Ticking a project ticks its subprojects too. Your picks are remembered for next time.
+
+The file, `Todoist export 2026-11-09 1310.json` at the vault's root, has:
+
+- **Every open task** in those projects as at the export: subtasks, undated, overdue and recurring tasks included.
+- **Every completed task** in them since your Todoist account was made, from Todoist's completed-tasks archive.
+- **Events** from Todoist's activity log: completions (including each completion of a recurring task), reopenings and deletions, as far back as your plan keeps them. Deleted tasks can only be found here.
+- **For each task:** its id, exact title, project with its full path, section, parent task, labels, priority, date (with time, timezone and repeat), deadline, duration, description, created, updated and completed times, and its Todoist link.
+- **Where it's linked in your notes:** each line with its `%%td:…%%` marker, with the note's path, line number, `^block` id, checkbox status, and the line's `⏳`, `➕`, `🛫`, `📅`, `✅`, `❌` and `🔁` values (null when the line has none), plus whether this device's sync state links it.
+- **What it covers:** the export time in UTC and in your Todoist timezone, the projects included, the dates the history covers, and any part that couldn't be fetched. A task missing from the file isn't evidence it was completed.
+
+It reads a lot of history, so it can take a minute. Todoist has no cancelled state: a checkbox cancelled with `[-]` completes the Todoist task, and the export shows the line as cancelled.
 
 ## Install
 
@@ -231,6 +370,10 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | Folder → project | none | One `Folder = Project` per line. The longest matching folder wins. A note's `todoist_project:` frontmatter overrides it, and a `#[Project]` reference on a line overrides both. Unknown project names fall back to the Inbox. |
 | Pull interval (minutes) | 5 | Minimum 1. |
 | Import subtasks | Ask each time | Whether **Import task from Todoist** brings a task's open subtasks: **Ask each time**, **Always import** or **Never import**. |
+| Only lines with Tasks' global filter | off | With a global filter set in the Tasks plugin, only checkboxes that have it become Todoist tasks. See [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin). |
+| Write Tasks plugin fields | off | Writes each task's Todoist priority on its line as a Tasks priority and its repeat as `🔁`, both synced both ways, and adds `✅` done dates, and `❌` cancelled and `➕` created dates as your Tasks settings say. See [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin). |
+| Projects and labels note | off | Keeps a note listing your Todoist projects and labels for agents. See [Notes for agents](#notes-for-agents). |
+| Projects and labels note location | `.obsidian/todoist-projects-and-labels.md` | A path in the vault; `.md` is added if missing. |
 | This device creates tasks | on | Stored per device, not in `data.json`. Off means this device never creates tasks, even ones typed here. |
 | Create tasks for changes from other devices or apps | on for desktop, off for mobile | Stored per device. See [Multiple devices](#multiple-devices-obsidian-sync). |
 | Backfill existing checkboxes | — | Opens the backfill preview. |
@@ -245,6 +388,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 | **Add missing subtasks from Todoist** | On a synced task's line: adds its open subtasks that aren't in a note yet beneath it. Same as clicking the `↳` count on its chip. |
 | **Review backfill of existing checkboxes** | Shows how many unsynced open checkboxes would be created, and creates them on confirm. |
 | **Save sync log to a note** | Writes this device's recent sync decisions to `Inline Tasks sync log (desktop).md` (or `android`, `ios`), so you can compare what each device did. |
+| **Export tasks to JSON** | Writes the open and completed tasks in projects you pick, with their history and links to notes, to a JSON file. See [Exporting tasks](#exporting-tasks). |
 
 ## Privacy
 
@@ -263,11 +407,13 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 ## Known limitations
 
 - **Due times:** a time set in Todoist is shown as a date only. Changing the date in Obsidian replaces the due date with a date-only one, so the time is lost.
-- **Recurring tasks:** ticking one in Obsidian completes the current occurrence. Todoist moves it to the next date, and the checkbox unticks with the new date (not yet tested against the live API). Changing a recurring task's date in Obsidian ends the recurrence.
+- **Repeating tasks:** picking a date on the chip ends the repeat (see [Changing a date from the chip](#changing-a-date-from-the-chip)); changing `⏳` on the line keeps it. Repeat rules sync only with **Write Tasks plugin fields** on, and only those both Tasks and Todoist understand (see [Repeating tasks](#repeating-tasks)).
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used, and the chip's project picker won't move a task to either. Nor will it move one to a project whose name contains `]`.
 - **Labels:** typed references only add labels; removing one needs the picker. If a label is added in Todoist after this device last pulled and before a typed `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short. The picker pulls first, so it doesn't have this problem. A task with no labels has none on its chip to click: type `@` on its line instead.
 - **Subtasks:** a subtask added in Todoist to a task in a note appears only when you add it (see [Subtasks](#subtasks)). A task moved in Todoist under a task in another note, or in no note, keeps its place; lines aren't moved between notes.
 - **Order:** only subtasks are kept in order. The order of top-level tasks in a note isn't synced, since one note can hold tasks from several projects. The first time a task's subtasks are seen after updating, their order is just recorded: if the note and Todoist disagree then, they're left until one side is reordered. Lines synced before this version are taken as they're nested the first time each note syncs.
+- **Tasks plugin:** dates other than `⏳` and `📅` stay in the note. Priorities sync only with **Write Tasks plugin fields** on, and 🔽 and ⏬ both count as p4.
+- **Copies of a task:** only the home line decides its nesting and subtask order (see [The same task in several notes](#the-same-task-in-several-notes)). Completing a `🏁 delete` task in a copy, which deletes that line, doesn't complete it while other lines remain; tick it instead. A copy pasted from an old version of the line counts as an edit, so its older values are sent to Todoist.
 - **Not yet supported:** Todoist query blocks.
 
 ## Development

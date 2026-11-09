@@ -7,8 +7,11 @@ import { todoistColor } from "../todoist/colors";
 // Todoist priority 4 = p1 (urgent) … 1 = p4 (normal)
 const PRIORITY_CLASS: Record<number, string> = { 4: "p1", 3: "p2", 2: "p3" };
 
-/** Render the inline chip for a `%%td:<markerId>%%` marker. */
-export function renderChip(markerId: string, state: SyncState, doc: Document = document): HTMLElement {
+/**
+ * Render the inline chip for a `%%td:<markerId>%%` marker on a line in the note at `path`. On a
+ * copy of the task (a line outside its home note), the icon is a house, which opens the home note.
+ */
+export function renderChip(markerId: string, state: SyncState, path?: string, doc: Document = document): HTMLElement {
   const chip = doc.createElement("a");
   chip.className = "inline-tasks-chip";
   chip.setAttribute("contenteditable", "false");
@@ -45,6 +48,12 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     return chip;
   }
 
+  if (rec && path && rec.path !== path) {
+    icon.classList.add("is-copy");
+    setIcon(icon, "house");
+    icon.title = `A copy. This task's home is ${rec.path}: click to open it.`;
+  }
+
   if (meta) {
     const project = state.projects[meta.projectId];
     if (project) {
@@ -55,7 +64,14 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     }
     if (meta.due) {
       const s = add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
-      s.title = "Click to change its due date";
+      s.title = "Click to change its date";
+    }
+    if (meta.deadline) {
+      // Opens the task in Todoist, like the rest of the chip; the line's `📅` is where to change it.
+      const s = add(`inline-tasks-deadline${isOverdue(meta.deadline) && !meta.checked ? " is-overdue" : ""}`, "");
+      setIcon(s.createSpan(), "target");
+      s.createSpan({ text: formatDue(meta.deadline) });
+      s.title = `Deadline: ${meta.deadline}`;
     }
     const p = PRIORITY_CLASS[meta.priority];
     if (p) add(`inline-tasks-priority ${p}`, p.toUpperCase()).title = "Click to change its priority";

@@ -7,7 +7,9 @@
  * synced to the other.
  *
  * So each change to a note is classified when it happens:
- * - **local**: made in this device's editor. Pushed straight away.
+ * - **local**: made in this device's editor, or written by another plugin (Tasks' query results or
+ *   edit dialog, a checkbox ticked in reading view) right after a click or key press in this window.
+ *   Pushed straight away.
  * - **own**: the plugin's own write (a marker, a pulled change). Doesn't change the note's origin.
  * - **elsewhere**: anything else (Obsidian Sync, OneDrive, a script). The note is held until it has
  *   been quiet for QUIET_MS, by which time the device where it was typed has normally pushed it and
@@ -22,6 +24,8 @@ export const QUIET_MS = 120_000;
 export const LOCAL_WINDOW_MS = 5_000;
 /** An editor change this soon after a key press or tap in Obsidian counts as caused by it. */
 export const INPUT_WINDOW_MS = 1_500;
+/** A file write this soon after a click or key press in this window was caused by it, e.g. Tasks writing a ticked query result. */
+export const WRITE_AFTER_INPUT_MS = 3_000;
 
 export type ChangeOrigin = "local" | "own" | "elsewhere";
 
@@ -47,10 +51,14 @@ export class OriginTracker {
     this.ownContent.set(path, content);
   }
 
-  /** Classify a write to the note, given its new content. Call on every modify event. */
-  modified(path: string, content: string, now: number): ChangeOrigin {
+  /**
+   * Classify a write to the note, given its new content. Call on every modify event, with the time
+   * of the last click or key press in this window while it had focus.
+   */
+  modified(path: string, content: string, now: number, lastInputAt = -Infinity): ChangeOrigin {
     if (this.ownContent.get(path) === content) return "own";
     this.ownContent.delete(path);
+    if (now - lastInputAt < WRITE_AFTER_INPUT_MS) this.local.set(path, now);
     const local = this.local.get(path);
     if (local !== undefined && now - local <= LOCAL_WINDOW_MS) return "local";
     this.elsewhere.set(path, now);

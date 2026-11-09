@@ -8,9 +8,8 @@ import {
   prepareFuzzySearch,
   TFile,
 } from "obsidian";
-import { parseTaskLine } from "../parse/taskLine";
-import { projectKey } from "../sync/engine";
-import { projectTree, type ProjectNode } from "../sync/projects";
+import { createsTask, parseTaskLine } from "../parse/taskLine";
+import { findProjectId, projectPlan, projectRef, projectTree, splitProjectPath, type ProjectNode } from "../sync/projects";
 import type { SyncState } from "../sync/state";
 import { todoistColor } from "../todoist/colors";
 
@@ -49,7 +48,7 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
     const line = editor.getLine(cursor.line);
     const task = parseTaskLine(line);
     if (!task || /(^|\s)#notodoist(\s|$)/.test(line)) return null;
-    if (task.checked && !task.todoistId && !task.pendingUuid) return null; // never syncs, so a project means nothing
+    if (!task.todoistId && !task.pendingUuid && !createsTask(task)) return null; // never syncs, so a project means nothing
 
     const m = QUERY_RE.exec(line.slice(0, cursor.ch));
     if (!m) return null;
@@ -61,17 +60,17 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
 
   getSuggestions(ctx: EditorSuggestContext): Choice[] {
     const query = ctx.query.trim();
-    const out: Choice[] = projectChoices(this.getState(), query);
-    if (query && !out.some((c) => c.kind === "project" && projectKey(c.name) === projectKey(query))) {
-      out.push({ kind: "create", name: query });
-    }
+    const state = this.getState();
+    const out: Choice[] = projectChoices(state, query);
+    const create = createChoice(state, query);
+    if (create) out.push(create);
     return out;
   }
 
   renderSuggestion(choice: Choice, el: HTMLElement): void {
     el.addClass("inline-tasks-suggest");
     if (choice.kind === "create") {
-      el.createDiv({ text: `Create project “${choice.name}”`, cls: "inline-tasks-suggest-create" });
+      renderCreateChoice(this.getState(), choice.name, el);
       return;
     }
     renderProjectChoice(choice, el);
@@ -86,7 +85,9 @@ export class ProjectSuggest extends EditorSuggest<Choice> {
     const closeLen = CLOSE_RE.exec(rest)?.[0].length ?? 0;
     const end = { line: ctx.end.line, ch: ctx.end.ch + closeLen };
     const spaceAfter = rest.charAt(closeLen) === " ";
-    const text = `#[${choice.name}]` + (spaceAfter ? "" : " ");
+    // A project that shares its name with another is named by its path, so it means that one.
+    const name = choice.kind === "project" ? (projectRef(this.getState(), choice.id) ?? choice.name) : choice.name;
+    const text = `#[${name}]` + (spaceAfter ? "" : " ");
     editor.replaceRange(text, start, end);
     editor.setCursor({ line: start.line, ch: start.ch + text.length + (spaceAfter ? 1 : 0) });
   }
@@ -102,13 +103,37 @@ export type ProjectChoice = Extract<Choice, { kind: "project" }>;
 export function projectChoices(state: SyncState, query: string): ProjectChoice[] {
   const tree = projectTree(state);
   if (!query) return tree.map((p) => ({ kind: "project", ...p, score: 0 }));
-  const search = prepareFuzzySearch(query);
+  // `Work/Cli`: match against each project's path, so a project can be found under its parent.
+  const path = query.includes("/");
+  const search = prepareFuzzySearch(path ? splitProjectPath(query).join("/") : query);
   const out: ProjectChoice[] = [];
   for (const p of tree) {
-    const score = search(p.name)?.score;
+    const score = search(path ? p.names.join("/") : p.name)?.score;
     if (score !== undefined) out.push({ kind: "project", ...p, depth: 0, score });
   }
   return out.sort((a, b) => b.score - a.score); // stable, so ties keep Todoist's order
+}
+
+/**
+ * The picker's offer to create the project typed, `Acme` or `Work/Clients/Acme`, unless it exists.
+ * Not for a name with a `]`, which would end the `#[…]` reference.
+ */
+export function createChoice(state: SyncState, query: string): { kind: "create"; name: string } | undefined {
+  const parts = splitProjectPath(query);
+  if (!parts.length || query.includes("]") || findProjectId(state, query)) return undefined;
+  return { kind: "create", name: parts.join("/") };
+}
+
+/** "Create project “Acme” in Work / Clients", saying which of those it creates too. */
+export function renderCreateChoice(state: SyncState, ref: string, el: HTMLElement): void {
+  const { name, parents, missing } = projectPlan(state, ref);
+  let text = `Create project “${name}”`;
+  if (parents.length) text += ` in ${parents.join(" / ")}`;
+  el.createDiv({ text, cls: "inline-tasks-suggest-create" });
+  if (missing.length) {
+    const also = missing.map((m) => `“${m}”`).join(", ");
+    el.createDiv({ text: `Also creates ${also}`, cls: "inline-tasks-suggest-path" });
+  }
 }
 
 /**

@@ -4,13 +4,20 @@
  */
 
 export const SYNC_URL = "https://api.todoist.com/api/v1/sync";
+export const REST_URL = "https://api.todoist.com/api/v1/";
 
 export interface HttpRequest {
   url: string;
-  method: "POST";
+  method: "POST" | "GET";
   headers: Record<string, string>;
-  body: string;
+  body?: string;
 }
+
+/** A query parameter for a REST GET: arrays are sent as JSON, as Todoist expects. Null and undefined are left out. */
+export type QueryValue = string | number | boolean | string[] | null | undefined;
+
+/** How many times a rate-limited GET is retried, after the wait Todoist asks for. */
+const RATE_LIMIT_RETRIES = 3;
 export type HttpFn = (req: HttpRequest) => Promise<{ status: number; json: unknown }>;
 
 export interface TodoistDue {
@@ -28,6 +35,8 @@ export interface TodoistItem {
   is_deleted: boolean;
   priority: number; // 1 (normal) .. 4 (urgent)
   due: TodoistDue | null;
+  /** The deadline: when it must be done, a date without a time. */
+  deadline?: { date: string; lang?: string } | null;
   labels?: string[];
   /** The parent task's id, for a subtask. */
   parent_id?: string | null;
@@ -36,6 +45,10 @@ export interface TodoistItem {
   /** Fractional-indexing key: siblings sort by comparing these. Null for tasks not migrated yet. */
   order_key?: string | null;
   updated_at?: string;
+  /** When it was added. */
+  added_at?: string;
+  /** When it was completed, for a completed task. */
+  completed_at?: string | null;
 }
 
 export interface TodoistProject {
@@ -81,7 +94,42 @@ export class TodoistError extends Error {
 }
 
 export class TodoistClient {
-  constructor(private token: () => string, private http: HttpFn) {}
+  constructor(
+    private token: () => string,
+    private http: HttpFn,
+    private sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  ) {}
+
+  /**
+   * GET a REST endpoint under /api/v1/ (`tasks/completed/by_completion_date`, ...). Retries a
+   * 429 after the `retry_after` Todoist sends. The error says what Todoist said, for the export's
+   * list of problems.
+   */
+  async get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
+    const token = this.token();
+    if (!token) throw new TodoistError("No Todoist API token configured");
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v === null || v === undefined) continue;
+      qs.set(k, Array.isArray(v) ? JSON.stringify(v) : String(v));
+    }
+    const query = qs.toString();
+    const url = `${REST_URL}${path}${query ? `?${query}` : ""}`;
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.http({ url, method: "GET", headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+        const after = Number((res.json as { error_extra?: { retry_after?: number } } | null)?.error_extra?.retry_after);
+        await this.sleep((Number.isFinite(after) && after > 0 ? after : 5) * 1000);
+        continue;
+      }
+      if (res.status === 401 || res.status === 403) throw new TodoistError("Todoist rejected the API token", res.status);
+      if (res.status >= 400) {
+        const body = res.json as { error?: string } | null;
+        throw new TodoistError(`Todoist ${path} failed (${res.status}${body?.error ? `: ${body.error}` : ""})`, res.status);
+      }
+      return res.json as T;
+    }
+  }
 
   async sync(params: {
     syncToken?: string;

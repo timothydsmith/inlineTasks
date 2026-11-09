@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { findTasks, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
+import { afterEach, describe, expect, it } from "vitest";
+import { createsTask, findTasks, isCancelledStatus, setTasksGlobalFilter, setTasksStatuses, needsRelayout, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -8,7 +8,7 @@ describe("parseTaskLine", () => {
   });
 
   it("parses marker, due date and checked state", () => {
-    const t = parseTaskLine("  * [x] Call Bob 📅 2026-11-10 %%td:6Xg4Qm2pR%%")!;
+    const t = parseTaskLine("  * [x] Call Bob %%td:6Xg4Qm2pR%% ⏳ 2026-11-10")!;
     expect(t).toMatchObject({ prefix: "  * ", text: "Call Bob", checked: true, due: "2026-11-10", todoistId: "6Xg4Qm2pR" });
   });
 
@@ -29,7 +29,7 @@ describe("parseTaskLine", () => {
   });
 
   it("extracts #[Project] references from the text", () => {
-    const t = parseTaskLine("- [ ] Send #[Old] invoice #[Home Reno] 📅 2026-11-10 #urgent")!;
+    const t = parseTaskLine("- [ ] Send #[Old] invoice #[Home Reno] ⏳ 2026-11-10 #urgent")!;
     expect(t.projectRef).toBe("Home Reno"); // last one wins
     expect(t.text).toBe("Send invoice #urgent"); // ordinary tags stay
     expect(parseTaskLine("- [ ] Plain #tag")!.projectRef).toBeNull();
@@ -49,7 +49,7 @@ describe("parseTaskLine", () => {
   });
 
   it("extracts a p1–p4 priority from the text", () => {
-    const t = parseTaskLine("- [ ] Plan p2 roadmap P1 📅 2026-11-10")!;
+    const t = parseTaskLine("- [ ] Plan p2 roadmap P1 ⏳ 2026-11-10")!;
     expect(t.priorityRef).toBe(1); // last one wins, either case
     expect(t.text).toBe("Plan roadmap");
     for (const line of ["- [ ] Review mp3 files", "- [ ] Use #p1 tag", "- [ ] Win p1st", "- [ ] Try p5", "- [ ] Ref (p1)"]) {
@@ -78,7 +78,7 @@ describe("parseTaskLine", () => {
   });
 
   it("reads only what follows a synced title for references", () => {
-    const line = "- [ ] Call Bob today p2 📅 2026-11-10 %%td:abc%%";
+    const line = "- [ ] Call Bob today p2 %%td:abc%% ⏳ 2026-11-10";
     const plain = parseTaskLine(line)!;
     expect([plain.text, plain.dueRef, plain.priorityRef]).toEqual(["Call Bob", "today", 2]);
     expect(plain.content).toBe("Call Bob today p2");
@@ -108,37 +108,44 @@ describe("parseTaskLine", () => {
 
 describe("serializeTask", () => {
   it("round-trips a canonical line", () => {
-    const line = "- [ ] Call Bob 📅 2026-11-10 %%td:abc123%%";
+    const line = "- [ ] Call Bob %%td:abc123%% ⏳ 2026-11-10";
     expect(serializeTask(parseTaskLine(line)!)).toBe(line);
   });
 
   it("normalises field order", () => {
-    const t = parseTaskLine("- [ ] %%td:abc%% Call 📅 2026-01-02 Bob")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob 📅 2026-01-02 %%td:abc%%");
+    const t = parseTaskLine("- [ ] %%td:abc%% Call ⏳ 2026-01-02 Bob")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob %%td:abc%% ⏳ 2026-01-02");
   });
 
   it("keeps a project reference before the due date and marker", () => {
-    const t = parseTaskLine("- [ ] Call #[Work] Bob 📅 2026-11-10 %%td:abc%%")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob #[Work] 📅 2026-11-10 %%td:abc%%");
-    expect(serializeTask({ ...t, projectRef: null })).toBe("- [ ] Call Bob 📅 2026-11-10 %%td:abc%%");
+    const t = parseTaskLine("- [ ] Call #[Work] Bob %%td:abc%% ⏳ 2026-11-10")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob #[Work] %%td:abc%% ⏳ 2026-11-10");
+    expect(serializeTask({ ...t, projectRef: null })).toBe("- [ ] Call Bob %%td:abc%% ⏳ 2026-11-10");
   });
 
   it("writes labels after the text, bracketing names that need it", () => {
-    const t = parseTaskLine("- [ ] Call @[Waiting For] Bob #[Work] @PhoneCall 📅 2026-11-10")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob @[Waiting For] @PhoneCall #[Work] 📅 2026-11-10");
-    expect(serializeTask({ ...t, labelRefs: ["done."] })).toBe("- [ ] Call Bob @[done.] #[Work] 📅 2026-11-10");
+    const t = parseTaskLine("- [ ] Call @[Waiting For] Bob #[Work] @PhoneCall ⏳ 2026-11-10")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob @[Waiting For] @PhoneCall #[Work] ⏳ 2026-11-10");
+    expect(serializeTask({ ...t, labelRefs: ["done."] })).toBe("- [ ] Call Bob @[done.] #[Work] ⏳ 2026-11-10");
   });
 
   it("writes a priority straight after the text", () => {
-    const t = parseTaskLine("- [ ] Call p2 Bob @PhoneCall 📅 2026-11-10 %%td:abc%%")!;
-    expect(serializeTask(t)).toBe("- [ ] Call Bob p2 @PhoneCall 📅 2026-11-10 %%td:abc%%");
-    expect(serializeTask({ ...t, priorityRef: null })).toBe("- [ ] Call Bob @PhoneCall 📅 2026-11-10 %%td:abc%%");
+    const t = parseTaskLine("- [ ] Call p2 Bob @PhoneCall %%td:abc%% ⏳ 2026-11-10")!;
+    expect(serializeTask(t)).toBe("- [ ] Call Bob p2 @PhoneCall %%td:abc%% ⏳ 2026-11-10");
+    expect(serializeTask({ ...t, priorityRef: null })).toBe("- [ ] Call Bob @PhoneCall %%td:abc%% ⏳ 2026-11-10");
   });
 
-  it("preserves custom checked statuses but unchecks to space", () => {
-    const t = parseTaskLine("- [/] Half done")!;
-    expect(serializeTask(t)).toBe("- [/] Half done");
-    expect(serializeTask({ ...t, checked: false })).toBe("- [ ] Half done");
+  it("keeps a status while it still says the same, and ticks and unticks to x and a space", () => {
+    const half = parseTaskLine("- [/] Half done")!;
+    expect(half.checked).toBe(false);
+    expect(serializeTask(half)).toBe("- [/] Half done");
+    expect(serializeTask({ ...half, checked: true })).toBe("- [x] Half done");
+    const cancelled = parseTaskLine("- [-] Dropped")!;
+    expect(cancelled.checked).toBe(true);
+    expect(serializeTask(cancelled)).toBe("- [-] Dropped");
+    expect(serializeTask({ ...cancelled, checked: false })).toBe("- [ ] Dropped");
+    expect(parseTaskLine("- [X] Done")!.checked).toBe(true);
+    expect(parseTaskLine("- [?] Maybe")!.checked).toBe(false);
     expect(serializeTask({ ...parseTaskLine("- [ ] X")!, checked: true })).toBe("- [x] X");
   });
 });
@@ -176,9 +183,9 @@ describe("findTasks", () => {
 
 describe("withProjectRef", () => {
   it("adds the reference just before the marker, where it's read as a project", () => {
-    const line = "\t- [ ] Call Bob 📅 2026-11-10 %%td:T1%%";
+    const line = "\t- [ ] Call Bob %%td:T1%% ⏳ 2026-11-10";
     const out = withProjectRef(line, "Home Reno");
-    expect(out).toBe("\t- [ ] Call Bob 📅 2026-11-10 #[Home Reno] %%td:T1%%");
+    expect(out).toBe("\t- [ ] Call Bob #[Home Reno] %%td:T1%% ⏳ 2026-11-10");
     expect(parseTaskLine(out)).toMatchObject({ projectRef: "Home Reno", due: "2026-11-10", todoistId: "T1" });
   });
 
@@ -232,5 +239,130 @@ describe("startsLabel", () => {
     expect(startsLabel("- Call Bob @", 11)).toBe(false); // not a checkbox
     expect(startsLabel("- [x] Done @", 11)).toBe(false); // ticked and never synced
     expect(startsLabel("- [ ] Private #notodoist @", 25)).toBe(false);
+  });
+});
+
+describe("Tasks plugin fields", () => {
+  it("keeps Tasks' fields out of the title and writes them after the marker, in Tasks' order", () => {
+    const t = parseTaskLine("- [ ] Water plants ⏫ 🔁 every week when done ⏳ 2026-11-08 📅 2026-11-10 ➕ 2026-11-01 🛫 2026-11-07 %%td:abc%%")!;
+    expect(t).toMatchObject({ text: "Water plants", due: "2026-11-08", deadline: "2026-11-10", todoistId: "abc", dueRef: null, priorityRef: null });
+    expect(t.fields).toEqual({ priority: "⏫", recurrence: "every week when done", created: "2026-11-01", start: "2026-11-07" });
+    expect(serializeTask(t)).toBe(
+      "- [ ] Water plants %%td:abc%% ⏫ 🔁 every week when done ➕ 2026-11-01 🛫 2026-11-07 ⏳ 2026-11-08 📅 2026-11-10",
+    );
+  });
+
+  it("round-trips a done line with a done date, ids and a block link", () => {
+    const line = "- [x] Pay rent #home %%td:abc%% 🆔 rent ⛔ bank,cash 🏁 delete 📅 2026-11-10 ✅ 2026-11-06 ^rent-nov";
+    const t = parseTaskLine(line)!;
+    expect(t).toMatchObject({ text: "Pay rent #home", checked: true, blockLink: "rent-nov" });
+    expect(t.fields).toMatchObject({ id: "rent", dependsOn: "bank,cash", onCompletion: "delete", done: "2026-11-06" });
+    expect(serializeTask(t)).toBe(line);
+  });
+
+  it("reads Tasks' other spellings: variation selectors, 📆 and ⌛", () => {
+    const t = parseTaskLine("- [ ] Call ⏫️ ⌛ 2026-11-08 📆 2026-11-10")!;
+    expect(t).toMatchObject({ text: "Call", due: "2026-11-08", deadline: "2026-11-10" });
+    expect(t.fields).toEqual({ priority: "⏫" });
+    expect(serializeTask(t)).toBe("- [ ] Call ⏫ ⏳ 2026-11-08 📅 2026-11-10");
+  });
+
+  it("reads references typed after the fields", () => {
+    expect(parseTaskLine("- [ ] Call %%td:a%% 📅 2026-11-10 p1 @PhoneCall")).toMatchObject({
+      text: "Call",
+      deadline: "2026-11-10",
+      priorityRef: 1,
+      labelRefs: ["PhoneCall"],
+    });
+  });
+
+  it("knows a line written with its marker after the fields", () => {
+    const old = "- [ ] Call Bob 📅 2026-11-10 %%td:abc%%";
+    expect(needsRelayout(old, parseTaskLine(old)!)).toBe(true);
+    const ok = "- [ ] Call Bob %%td:abc%% 📅 2026-11-10";
+    expect(needsRelayout(ok, parseTaskLine(ok)!)).toBe(false);
+    const bare = "- [ ] Call Bob %%td:abc%%";
+    expect(needsRelayout(bare, parseTaskLine(bare)!)).toBe(false);
+    const block = "- [ ] Call Bob ^b1 %%td:abc%%";
+    expect(needsRelayout(block, parseTaskLine(block)!)).toBe(true);
+    expect(serializeTask(parseTaskLine(block)!)).toBe("- [ ] Call Bob %%td:abc%% ^b1");
+  });
+
+  it("starts Todoist tasks only from to-do and in-progress lines", () => {
+    expect(createsTask(parseTaskLine("- [ ] a")!)).toBe(true);
+    expect(createsTask(parseTaskLine("- [/] a")!)).toBe(true);
+    expect(createsTask(parseTaskLine("- [?] a")!)).toBe(false);
+    expect(createsTask(parseTaskLine("- [x] a")!)).toBe(false);
+    expect(createsTask(parseTaskLine("- [-] a")!)).toBe(false);
+    expect(createsTask(parseTaskLine("- [ ] a %%td:x%%")!)).toBe(false);
+  });
+});
+
+describe("Tasks plugin statuses", () => {
+  afterEach(() => setTasksStatuses(null));
+  const line = (s: string) => parseTaskLine(`- [${s}] Thing`)!;
+
+  it("reads statuses as Tasks defines them", () => {
+    setTasksStatuses([
+      { symbol: "d", type: "DONE" },
+      { symbol: "c", type: "CANCELLED" },
+      { symbol: "~", type: "NON_TASK" },
+      { symbol: "/", type: "NON_TASK" },
+    ]);
+    expect(["d", "c", "~", "/", "x", "X", "-", " "].map((s) => line(s).checked)).toEqual([true, true, false, false, true, true, true, false]);
+    expect(["c", "-", "d"].map(isCancelledStatus)).toEqual([true, true, false]);
+    expect(["~", "/", " ", "d"].map((s) => createsTask(line(s)))).toEqual([false, false, true, false]);
+    // A custom done line Todoist reopens becomes `[ ]`.
+    expect(serializeTask({ ...line("d"), checked: false })).toBe("- [ ] Thing");
+  });
+
+  it("goes back to the defaults without Tasks", () => {
+    setTasksStatuses([{ symbol: "d", type: "DONE" }]);
+    setTasksStatuses(null);
+    expect(line("d").checked).toBe(false);
+    expect(createsTask(line("d"))).toBe(false);
+    expect(createsTask(line("/"))).toBe(true);
+  });
+});
+
+describe("Tasks' global filter", () => {
+  afterEach(() => setTasksGlobalFilter(null));
+
+  it("keeps it out of the text, and writes it back where it was", () => {
+    setTasksGlobalFilter("#task");
+    const start = parseTaskLine("- [ ] #task Buy milk %%td:T1%% ⏳ 2026-11-10")!;
+    expect(start).toMatchObject({ text: "Buy milk", hasGlobalFilter: true, globalFilterAt: "start" });
+    expect(serializeTask({ ...start, text: "Buy bread" })).toBe("- [ ] #task Buy bread %%td:T1%% ⏳ 2026-11-10");
+    const end = parseTaskLine("- [ ] Buy milk #task p2")!;
+    expect(end).toMatchObject({ text: "Buy milk", priorityRef: 2, globalFilterAt: "end" });
+    expect(serializeTask({ ...end, priorityRef: null })).toBe("- [ ] Buy milk #task");
+  });
+
+  it("counts it inside a word, as Tasks does, but leaves it in the text there", () => {
+    setTasksGlobalFilter("#task");
+    const t = parseTaskLine("- [ ] Sort #tasks")!;
+    expect(t).toMatchObject({ text: "Sort #tasks", hasGlobalFilter: true });
+    expect(t.globalFilterAt).toBeUndefined();
+  });
+
+  it("treats a line with only the filter as empty", () => {
+    setTasksGlobalFilter("#task");
+    expect(parseTaskLine("- [ ] #task")!.excluded).toBe(true);
+  });
+
+  it("with only, makes tasks from lines with the filter alone", () => {
+    setTasksGlobalFilter("#task", true);
+    expect(createsTask(parseTaskLine("- [ ] Buy milk")!)).toBe(false);
+    expect(createsTask(parseTaskLine("- [ ] #task Buy milk")!)).toBe(true);
+    setTasksGlobalFilter("#task", false);
+    expect(createsTask(parseTaskLine("- [ ] Buy milk")!)).toBe(true);
+    setTasksGlobalFilter(null, true);
+    expect(createsTask(parseTaskLine("- [ ] Buy milk")!)).toBe(true);
+  });
+
+  it("handles a filter that isn't a tag", () => {
+    setTasksGlobalFilter("TODO");
+    const t = parseTaskLine("- [ ] TODO call (Bob)")!;
+    expect(t).toMatchObject({ text: "call (Bob)", globalFilterAt: "start" });
   });
 });

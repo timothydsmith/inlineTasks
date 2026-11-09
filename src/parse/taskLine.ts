@@ -2,11 +2,20 @@
  * Pure parsing/serialisation of markdown checkbox lines.
  *
  * Line format:
- *   <indent>- [ ] Task text 📅 2026-11-10 %%td:6Xg4Qm2pR%%
+ *   <indent>- [ ] Task text %%td:6Xg4Qm2pR%% ⏳ 2026-11-10 📅 2026-11-14
  *
  * - `%%td:<id>%%`      Todoist task id (Obsidian comment, hidden in reading view).
- *                      `%%td:new-<uuid>%%` marks a task whose creation is in flight.
- * - `📅 YYYY-MM-DD`    optional due date (Tasks-plugin compatible).
+ *                      `%%td:new-<uuid>%%` marks a task whose creation is in flight. Written after
+ *                      the task's text and before its fields: the Tasks plugin reads fields from the
+ *                      end of the line and stops at anything it doesn't know, such as the marker.
+ * - `⏳ YYYY-MM-DD`    the Todoist date: when you plan to do it (Tasks' scheduled date).
+ * - `📅 YYYY-MM-DD`    the Todoist deadline: when it must be done (Tasks' due date).
+ * - Tasks-plugin fields (`⏳ 🛫 ➕ ✅ ❌` dates, `🔁` repeats, `🔺 ⏫ 🔼 🔽 ⏬` priorities,
+ *                      `🆔 ⛔ 🏁`) and a `^block-link` at the end stay on the line, out of the
+ *                      Todoist title. Written in the order Tasks writes them.
+ * - Status: `[x]`, `[X]` (done) and `[-]` (cancelled) complete the Todoist task. Any other
+ *                      status, such as Tasks' `[/]` (in progress), leaves it open. New Todoist
+ *                      tasks are made only from `[ ]` and `[/]`.
  * - `#notodoist`       opt this line out of syncing.
  * - `#[Project name]`  file the task in that Todoist project (created if missing).
  *                      Stripped from the line once Todoist has applied it; the chip shows the project.
@@ -16,13 +25,30 @@
  *                      the last one wins. Stripped once applied; the chip shows the priority.
  * - `today`, `friday`, `next week`, `every monday`, `15/11` ...  a due date in words (see
  *                      DUE_WORDS_RE_G). Todoist works out the date; once it's pulled back, the
- *                      words are replaced on the line by `📅 YYYY-MM-DD`.
+ *                      words are replaced on the line by `⏳ YYYY-MM-DD`.
  */
 
 export interface TaskFields {
   text: string;
   checked: boolean;
-  due: string | null; // YYYY-MM-DD
+  /** The Todoist date (`⏳`), YYYY-MM-DD. Todoist's API calls it the due date. */
+  due: string | null;
+  /**
+   * The Todoist deadline (`📅`), YYYY-MM-DD. Missing from a merge base saved before deadlines
+   * synced, whose line still has the date written as `📅` (see SyncEngine.readLine).
+   */
+  deadline?: string | null;
+  /**
+   * Priority as written (1 = p1, urgent … 4 = none), from the line's Tasks priority. Only tracked
+   * when the **Write Tasks plugin fields** setting is on; missing otherwise.
+   */
+  priority?: number;
+  /**
+   * The repeat, as a canonical rule (see canonicalRule), null for none. Only tracked when the
+   * **Write Tasks plugin fields** setting is on, and missing when a rule doesn't translate.
+   * Not read or written by the line parser: the line's rule is `fields.recurrence`.
+   */
+  recurrence?: string | null;
 }
 
 export interface ParsedTask extends TaskFields {
@@ -30,7 +56,10 @@ export interface ParsedTask extends TaskFields {
   prefix: string;
   /** Raw char inside the brackets (" ", "x", "X", "/", "-", ...). */
   status: string;
-  /** Everything after the checkbox except the marker and `📅` date, references included, spaces collapsed. */
+  /**
+   * Everything after the checkbox except the marker, the `⏳` and `📅` dates, other Tasks fields and a block
+   * link: references included, spaces collapsed.
+   */
   content: string;
   /** Real Todoist id, or null. */
   todoistId: string | null;
@@ -45,13 +74,196 @@ export interface ParsedTask extends TaskFields {
   priorityRef: number | null;
   /** Due date in words (`next friday`, `15/11`, ...), as written, or null. The last one wins. */
   dueRef: string | null;
+  /** Tasks-plugin fields other than the due date, as on the line. Missing means none. */
+  fields?: TasksFields;
+  /** A block link at the end of the line (`^abc`), without the `^`, or null. */
+  blockLink?: string | null;
+  /** Whether the line has the Tasks plugin's global filter, which makes it a task to Tasks. */
+  hasGlobalFilter?: boolean;
+  /**
+   * Where the global filter was, as a word of its own, when it was taken out of the content and
+   * text (and so the Todoist title): before the text, or after it. Written back there.
+   */
+  globalFilterAt?: "start" | "end";
+  /**
+   * The date taken from the note's name, as the Tasks plugin does for a task without a `⏳`, `📅`
+   * or `🛫` date, when it's the task's `due`. Not written as `⏳` while it's still the date.
+   */
+  inferredDue?: string;
+}
+
+/** Tasks-plugin fields other than the due date. Values as Tasks writes them, after the emoji. */
+export interface TasksFields {
+  id?: string;
+  dependsOn?: string;
+  /** The emoji itself: 🔺 ⏫ 🔼 🔽 ⏬. */
+  priority?: string;
+  recurrence?: string;
+  onCompletion?: string;
+  created?: string;
+  start?: string;
+  cancelled?: string;
+  done?: string;
+}
+
+type FieldKey = keyof TasksFields | "due" | "deadline";
+
+/** Optional variation selector after an emoji. */
+const VS = "\uFE0F?";
+const field = (key: FieldKey, emoji: string, value: string, write: (v: string) => string) => ({
+  key,
+  re: new RegExp(`\\s*(?:${emoji})${VS}${value}`, "gu"),
+  write,
+});
+const dateField = (key: FieldKey, emoji: string, sign: string) =>
+  field(key, emoji, "\\s*(\\d{4}-\\d{2}-\\d{2})", (v) => `${sign} ${v}`);
+/** Tasks' fields, in the order Tasks writes them after the description. */
+const FIELDS = [
+  field("id", "🆔", "\\s*([A-Za-z0-9_-]+)", (v) => `🆔 ${v}`),
+  field("dependsOn", "⛔", "\\s*([A-Za-z0-9_-]+(?:\\s*,\\s*[A-Za-z0-9_-]+)*)", (v) => `⛔ ${v}`),
+  field("priority", "", `(🔺|⏫|🔼|🔽|⏬)${VS}`, (v) => v),
+  field("recurrence", "🔁", "\\s*([A-Za-z0-9, !]*[A-Za-z0-9!])", (v) => `🔁 ${v}`),
+  field("onCompletion", "🏁", "\\s*([Dd]elete|[Kk]eep)", (v) => `🏁 ${v.toLowerCase()}`),
+  dateField("created", "➕", "➕"),
+  dateField("start", "🛫", "🛫"),
+  dateField("due", "⏳|⌛", "⏳"),
+  dateField("deadline", "📅|📆|🗓", "📅"),
+  dateField("cancelled", "❌", "❌"),
+  dateField("done", "✅", "✅"),
+];
+const BLOCK_LINK_RE = /(?:^|\s)\^([A-Za-z0-9-]+)$/;
+/**
+ * Checkbox statuses by what they mean for Todoist, as the Tasks plugin's defaults have them (with
+ * Obsidian's `[X]` as done). setTasksStatuses changes them to match the user's Tasks settings.
+ */
+const DEFAULT_STATUSES = { closed: "xX-", cancelled: "-", open: " /" };
+/** Statuses that complete the Todoist task: done and cancelled. */
+let closedStatuses = new Set(DEFAULT_STATUSES.closed);
+/** Closed statuses that are cancelled rather than done, so get no done date. */
+let cancelledStatuses = new Set(DEFAULT_STATUSES.cancelled);
+/** Statuses an unsynced line can start a Todoist task from: to do, and in progress. */
+let openStatuses = new Set(DEFAULT_STATUSES.open);
+
+/** The Tasks plugin's global filter, such as `#task`, or "" for none. */
+let globalFilter = "";
+/** Only lines with the global filter start Todoist tasks. */
+let onlyGlobalFilter = false;
+
+/**
+ * Use the Tasks plugin's global filter: it's kept out of Todoist titles and put on lines the plugin
+ * writes, and with `only`, lines without it don't become Todoist tasks. Null: none.
+ */
+export function setTasksGlobalFilter(filter: string | null | undefined, only = false): void {
+  globalFilter = typeof filter === "string" ? filter.trim() : "";
+  onlyGlobalFilter = only;
+}
+
+/** The Tasks plugin's global filter, or "" for none. */
+export function tasksGlobalFilter(): string {
+  return globalFilter;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+/** The global filter as a word of its own, as Tasks removes it. */
+const globalFilterRe = () => new RegExp(`(^|\\s)${escapeRe(globalFilter)}(?=\\s|$)`, "gu");
+
+/** Text without the global filter where it's a word of its own, as Tasks shows it with "remove global filter" on. */
+export function withoutGlobalFilter(s: string): string {
+  return globalFilter ? normalize(s.replace(globalFilterRe(), "$1")) : s;
+}
+
+/** A status as the Tasks plugin's settings define it. */
+export interface TasksStatus {
+  symbol: string;
+  /** TODO, IN_PROGRESS, DONE, CANCELLED or NON_TASK. */
+  type: string;
+}
+
+/**
+ * Use the Tasks plugin's statuses: DONE and CANCELLED ones complete the Todoist task, TODO and
+ * IN_PROGRESS ones are open and start new tasks, and NON_TASK ones do neither: a synced line keeps
+ * its Todoist task open, and an unsynced one isn't sent. Symbols Tasks doesn't define keep their
+ * default meaning. Null (no Tasks plugin) restores the defaults.
+ */
+export function setTasksStatuses(statuses: TasksStatus[] | null): void {
+  closedStatuses = new Set(DEFAULT_STATUSES.closed);
+  cancelledStatuses = new Set(DEFAULT_STATUSES.cancelled);
+  openStatuses = new Set(DEFAULT_STATUSES.open);
+  for (const { symbol, type } of statuses ?? []) {
+    if (typeof symbol !== "string" || symbol.length !== 1) continue;
+    for (const set of [closedStatuses, cancelledStatuses, openStatuses]) set.delete(symbol);
+    if (type === "DONE" || type === "CANCELLED") closedStatuses.add(symbol);
+    if (type === "CANCELLED") cancelledStatuses.add(symbol);
+    if (type === "TODO" || type === "IN_PROGRESS") openStatuses.add(symbol);
+  }
+}
+
+/** Tasks priorities for Todoist's p1–p3. p4 is Tasks' normal priority, written as nothing. */
+const PRIORITY_EMOJI: Record<number, string> = { 1: "🔺", 2: "⏫", 3: "🔼" };
+
+/**
+ * A line's Tasks priority as a Todoist priority, as written (1 = p1 … 4 = none): 🔺 is p1, ⏫ p2,
+ * 🔼 p3, and normal, 🔽 and ⏬ are p4, since Todoist has four levels to Tasks' six.
+ */
+export function linePriority(task: Pick<ParsedTask, "fields">): number {
+  const p = task.fields?.priority;
+  for (const [n, e] of Object.entries(PRIORITY_EMOJI)) if (e === p) return Number(n);
+  return 4;
+}
+
+/** Tasks fields with the priority set from a Todoist priority, as written. Keeps 🔽 and ⏬ for p4. */
+export function withLinePriority(fields: TasksFields | undefined, p: number): TasksFields {
+  const out = { ...fields };
+  if (PRIORITY_EMOJI[p]) out.priority = PRIORITY_EMOJI[p];
+  else if (out.priority !== "🔽" && out.priority !== "⏬") delete out.priority;
+  return out;
+}
+
+/** Tasks fields with the done date set, or removed when `date` is null. */
+export function withDoneDate(fields: TasksFields | undefined, date: string | null): TasksFields {
+  return withDate(fields, "done", date);
+}
+
+/** Tasks fields with a date field set, or removed when `date` is null. */
+export function withDate(fields: TasksFields | undefined, key: "done" | "cancelled" | "created", date: string | null): TasksFields {
+  const out = { ...fields };
+  if (date) out[key] = date;
+  else delete out[key];
+  return out;
+}
+
+/** Which dates the Tasks plugin adds: `➕` to new tasks, `❌` to cancelled ones (its defaults: no, yes). */
+let tasksDates = { created: false, cancelled: true };
+
+/** Follow the Tasks plugin's settings for `➕` created and `❌` cancelled dates. Null: its defaults. */
+export function setTasksDates(dates: { created?: boolean; cancelled?: boolean } | null): void {
+  tasksDates = { created: dates?.created === true, cancelled: dates?.cancelled !== false };
+}
+
+/** Whether to add `➕` dates to new tasks and `❌` dates to cancelled ones, as the Tasks plugin is set to. */
+export function tasksDateSettings(): { created: boolean; cancelled: boolean } {
+  return tasksDates;
+}
+
+/** Whether a checkbox status completes the Todoist task. */
+export function isClosedStatus(status: string): boolean {
+  return closedStatuses.has(status);
+}
+
+/** Whether a checkbox status is a cancelled one: it completes the Todoist task, but without a done date. */
+export function isCancelledStatus(status: string): boolean {
+  return cancelledStatuses.has(status);
+}
+
+/** Whether an unsynced line with this status, and not opted out, becomes a Todoist task. */
+export function createsTask(task: Pick<ParsedTask, "status" | "excluded" | "todoistId" | "pendingUuid" | "hasGlobalFilter">): boolean {
+  if (onlyGlobalFilter && globalFilter && !task.hasGlobalFilter) return false;
+  return !task.excluded && !task.todoistId && !task.pendingUuid && openStatuses.has(task.status);
 }
 
 const CHECKBOX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)\[(.)\]\s?(.*)$/;
 const MARKER_RE = /\s*%%td:([A-Za-z0-9_-]+)%%/;
 const MARKER_RE_G = /\s*%%td:[A-Za-z0-9_-]+%%/g;
-const DUE_RE = /\s*📅\s*(\d{4}-\d{2}-\d{2})/;
-const DUE_RE_G = /\s*📅\s*\d{4}-\d{2}-\d{2}/g;
 const OPT_OUT_RE = /(^|\s)#notodoist(\s|$)/;
 const PROJECT_RE_G = /(^|\s)#\[([^\]\n]*)\]/g;
 /**
@@ -81,24 +293,60 @@ const DUE_WORDS_RE_G = new RegExp(
 const LABEL_NEEDS_BRACKETS = /[\s@[\]#()]|[.,;:!?'"]$/;
 const PENDING_PREFIX = "new-";
 
-export function parseTaskLine(line: string): ParsedTask | null {
+/**
+ * Read a checkbox line. `fileDate` is the date in the note's name, YYYY-MM-DD, when the Tasks
+ * plugin takes one as the scheduled date: a line with no `⏳`, `📅` or `🛫` date has it as its date.
+ */
+export function parseTaskLine(line: string, fileDate?: string | null): ParsedTask | null {
   const m = CHECKBOX_RE.exec(line);
   if (!m) return null;
   const [, prefix, status, rest] = m;
 
   const marker = MARKER_RE.exec(rest);
   const markerId = marker ? marker[1] : null;
-  const due = DUE_RE.exec(rest);
 
-  const content = normalize(rest.replace(MARKER_RE_G, "").replace(DUE_RE_G, ""));
+  // Last one wins, as in Tasks, which reads from the end of the line.
+  let s = rest.replace(MARKER_RE_G, " ");
+  let due: string | null = null;
+  let deadline: string | null = null;
+  const fields: TasksFields = {};
+  for (const f of FIELDS) {
+    s = s.replace(f.re, (_m, v: string) => {
+      if (f.key === "due") due = v;
+      else if (f.key === "deadline") deadline = v;
+      else fields[f.key] = v;
+      return " ";
+    });
+  }
+  let content = normalize(s);
+  const block = BLOCK_LINK_RE.exec(content);
+  if (block) content = content.slice(0, block.index).trimEnd();
+  // Tasks counts a line with the global filter anywhere, and hides it only where it's a word.
+  const hasGlobalFilter = !!globalFilter && rest.includes(globalFilter);
+  let globalFilterAt: "start" | "end" | undefined;
+  if (hasGlobalFilter) {
+    const at = content.search(globalFilterRe());
+    if (at >= 0) {
+      globalFilterAt = at === 0 ? "start" : "end";
+      content = withoutGlobalFilter(content);
+    }
+  }
   const refs = readRefs(content);
+  const inferred = fileDate && !due && !deadline && !fields.start ? fileDate : null;
+  if (inferred) due = inferred;
   return {
     prefix,
     status,
     content,
     ...refs,
-    checked: status !== " ",
-    due: due ? due[1] : null,
+    checked: isClosedStatus(status),
+    due,
+    deadline,
+    fields,
+    blockLink: block ? block[1] : null,
+    ...(globalFilter ? { hasGlobalFilter } : {}),
+    ...(globalFilterAt ? { globalFilterAt } : {}),
+    ...(inferred ? { inferredDue: inferred } : {}),
     todoistId: markerId && !markerId.startsWith(PENDING_PREFIX) ? markerId : null,
     pendingUuid: markerId && markerId.startsWith(PENDING_PREFIX) ? markerId.slice(PENDING_PREFIX.length) : null,
     excluded: isExcluded(refs.text),
@@ -159,18 +407,40 @@ export function markerFor(task: Pick<ParsedTask, "todoistId" | "pendingUuid">): 
   return null;
 }
 
-/** Serialise a task back to a line. Preserves prefix and non-standard statuses when still checked. */
+/**
+ * Serialise a task back to a line: text, references, marker, then the Tasks fields and block link.
+ * Keeps the prefix, and a status that still says the same: `[-]` stays while the task is still
+ * closed, `[/]` while it's still open.
+ */
 export function serializeTask(task: ParsedTask): string {
-  const status = task.checked ? (task.status !== " " ? task.status : "x") : " ";
-  let out = `${task.prefix}[${status}] ${task.text}`;
+  const closed = isClosedStatus(task.status);
+  const status = task.checked ? (closed ? task.status : "x") : closed ? " " : task.status;
+  const gf = task.globalFilterAt && globalFilter;
+  const text = !gf ? task.text : task.globalFilterAt === "start" ? `${gf} ${task.text}` : `${task.text} ${gf}`;
+  let out = `${task.prefix}[${status}] ${text.trim()}`;
   if (task.priorityRef) out += ` p${task.priorityRef}`;
   if (task.dueRef) out += ` ${task.dueRef}`;
   for (const l of task.labelRefs) out += ` ${labelRef(l)}`;
   if (task.projectRef) out += ` #[${task.projectRef}]`;
-  if (task.due) out += ` 📅 ${task.due}`;
   const marker = markerFor(task);
   if (marker) out += ` ${marker}`;
+  // A date from the note's name stays unwritten while the line still takes it from there.
+  const fromName = !!task.inferredDue && task.due === task.inferredDue && !task.deadline && !task.fields?.start;
+  for (const f of FIELDS) {
+    const v = f.key === "due" ? (fromName ? null : task.due) : f.key === "deadline" ? task.deadline : task.fields?.[f.key];
+    if (v) out += ` ${f.write(v)}`;
+  }
+  if (task.blockLink) out += ` ^${task.blockLink}`;
   return out;
+}
+
+/**
+ * Whether a line has its marker last, after fields or a block link, as lines were written before
+ * the marker moved. Tasks can't read those fields until the line is rewritten.
+ */
+export function needsRelayout(line: string, task: ParsedTask): boolean {
+  if (!/%%td:[A-Za-z0-9_-]+%%\s*$/.test(line)) return false;
+  return !!task.due || !!task.deadline || !!task.blockLink || Object.values(task.fields ?? {}).some(Boolean);
 }
 
 /** How a label is written on a line: `@name`, or `@[Label name]` when the name needs it. */
@@ -183,8 +453,8 @@ export interface TaskLocation {
   task: ParsedTask;
 }
 
-/** Find all checkbox lines in a file, skipping frontmatter and fenced code blocks. */
-export function findTasks(content: string): TaskLocation[] {
+/** Find all checkbox lines in a file, skipping frontmatter and fenced code blocks. `fileDate`: see parseTaskLine. */
+export function findTasks(content: string, fileDate?: string | null): TaskLocation[] {
   const lines = content.split("\n");
   const out: TaskLocation[] = [];
   let i = 0;
@@ -209,7 +479,7 @@ export function findTasks(content: string): TaskLocation[] {
       continue;
     }
     if (fence !== null) continue;
-    const task = parseTaskLine(line);
+    const task = parseTaskLine(line, fileDate);
     if (task) out.push({ line: i, task });
   }
   return out;
@@ -299,7 +569,7 @@ export function startsLabel(line: string, ch: number): boolean {
   if (line.charAt(ch) !== "@") return false;
   const task = parseTaskLine(line);
   if (!task || /(^|\s)#notodoist(\s|$)/.test(line)) return false;
-  if (task.checked && !task.todoistId && !task.pendingUuid) return false; // never syncs, so a label means nothing
+  if (!task.todoistId && !task.pendingUuid && !createsTask(task)) return false; // never syncs, so a label means nothing
   if (ch < (CHECKBOX_PREFIX_RE.exec(line)?.[0].length ?? 0)) return false;
   return /\s/.test(line.charAt(ch - 1)) && (ch + 1 === line.length || /\s/.test(line.charAt(ch + 1)));
 }

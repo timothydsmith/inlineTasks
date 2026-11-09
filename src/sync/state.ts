@@ -1,7 +1,13 @@
 import type { TaskFields } from "../parse/taskLine";
 
 export interface TaskRecord {
+  /**
+   * The task's home note: where it was created or first linked. Its line there decides the task's
+   * nesting and subtask order. Its other lines, its copies, sync only its fields.
+   */
   path: string;
+  /** Other notes with a line for the task (a copy), besides its home. Missing means none. */
+  copies?: string[];
   /** Field values at the last successful sync (three-way merge base). */
   base: TaskFields;
   /**
@@ -18,6 +24,19 @@ export interface TaskRecord {
   kidsNote?: string[];
   kidsTodoist?: string[];
   orphaned?: boolean;
+  /** Its line has `🏁 delete`: Tasks deletes the line when the task is completed. */
+  deleteOnDone?: boolean;
+  /**
+   * When a `🏁 delete` line's marker vanished from its note (ms). Unless it turns up in another
+   * note, a pull then completes the Todoist task (see SyncEngine.completeDeleted).
+   */
+  gone?: number;
+  /**
+   * Todoist moved this repeating task on, from `from` to `to`, and its completions there are still
+   * to be found in Todoist's activity log, which can lag a little. `line` is its home line as it
+   * was. Checked at each pull until `until` (ms); see SyncEngine.checkHistory.
+   */
+  historyDue?: { from: string; to: string; line: string; until: number };
 }
 
 /** Remote-only metadata shown on the chip. */
@@ -25,6 +44,8 @@ export interface RemoteMeta {
   projectId: string;
   priority: number;
   due: string | null;
+  /** The deadline, YYYY-MM-DD. Undefined in details saved before deadlines were tracked. */
+  deadline?: string | null;
   dueString?: string;
   recurring?: boolean;
   checked: boolean;
@@ -72,6 +93,22 @@ export interface SyncState {
   subtasksSynced?: boolean;
   /** True once the user has confirmed the initial backfill of existing checkboxes. */
   backfillDone: boolean;
+  /** True once this device has moved markers in front of the fields on lines written before 0.4.0. */
+  relaidOut?: boolean;
+  /**
+   * True once a full sync has written priorities to the lines since the **Write Tasks plugin
+   * fields** setting was turned on. An incremental sync only returns tasks that changed.
+   */
+  tasksFieldsSynced?: boolean;
+  /**
+   * True once this device has rewritten lines from before deadlines synced, whose `📅` was the
+   * Todoist date, to write it as `⏳` (see SyncEngine.migrateVault).
+   */
+  datesMigrated?: boolean;
+  /** True once a full sync has brought every task's deadline to its line, after that rewrite. */
+  deadlinesSynced?: boolean;
+  /** True once a full sync has brought every task's repeat to its line, with Tasks fields written. */
+  repeatsSynced?: boolean;
 }
 
 export interface ProjectInfo {

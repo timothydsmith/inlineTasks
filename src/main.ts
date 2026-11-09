@@ -1,10 +1,15 @@
 import { EditorView } from "@codemirror/view";
-import { Editor, editorInfoField, MarkdownView, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
+import { Editor, editorInfoField, MarkdownView, moment, normalizePath, Notice, Platform, Plugin, requestUrl, TAbstractFile, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
+import { CATALOG_FILE, catalogNote } from "./sync/catalog";
+import { buildExport, exportFileName, fetchHistory, fetchSnapshot, linkedLines, type ObsidianLine, type Snapshot } from "./sync/export";
+import { ExportModal } from "./ui/exportModal";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
-import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withRef } from "./parse/taskLine";
+import { blockEnd, findLineByMarker, parseTaskLine, setTasksDates, setTasksGlobalFilter, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
+import { fileDate, type FileDateSettings } from "./sync/fileDate";
 import { OriginTracker } from "./sync/origin";
+import { projectRef } from "./sync/projects";
 import { emptyState, subtaskCount, type SyncState } from "./sync/state";
 import { TodoistClient, TodoistError, type HttpFn, type TodoistItem } from "./todoist/client";
 import { BackfillModal } from "./ui/backfillModal";
@@ -18,7 +23,12 @@ import { localEditTracker } from "./ui/localEdits";
 import { LabelModal, type LabelPick } from "./ui/labelModal";
 import { labelTrigger } from "./ui/labelTrigger";
 import { ProjectSuggest } from "./ui/projectSuggest";
-import { readingChipProcessor } from "./ui/readingChip";
+import { QueryChips, type TasksCacheTask } from "./ui/queryChips";
+import { copyChecker, type TasksQueryTask } from "./ui/queryFilter";
+import { clickableChip, readingChipProcessor } from "./ui/readingChip";
+
+/** The Tasks plugin's id, for reading its statuses. */
+const TASKS_PLUGIN_ID = "obsidian-tasks-plugin";
 
 /** `data.json`, which Obsidian Sync shares between devices. Sync state is kept per device instead. */
 interface PluginData {
@@ -38,6 +48,7 @@ export default class InlineTasksPlugin extends Plugin {
   settings: InlineTasksSettings = { ...DEFAULT_SETTINGS };
   state: SyncState = emptyState();
   engine!: SyncEngine;
+  private client!: TodoistClient;
 
   private dirty = new Set<string>();
   /** Notes with a label picker open from a typed `@`: not pushed until it closes, so the `@` never reaches a title. */
@@ -45,6 +56,12 @@ export default class InlineTasksPlugin extends Plugin {
   private pushTimer: number | null = null;
   private pullTimer: number | null = null;
   private chipVersion = 0;
+  /** Tasks puts a repeating task's next occurrence below the ticked line (see EngineSettings.historyAbove). */
+  private tasksNextLine = false;
+  /** Tasks' "use filename as scheduled date" settings (see sync/fileDate.ts). */
+  private tasksFileDates: FileDateSettings | null = null;
+  /** Chips in the Tasks plugin's query results. */
+  private queryChips: QueryChips | null = null;
   private lastErrorAt = 0;
   private backfillPrompted = false;
   /** Where each note's latest change came from (see sync/origin.ts). */
@@ -83,17 +100,18 @@ export default class InlineTasksPlugin extends Plugin {
       return { status: res.status, json };
     };
 
+    this.client = new TodoistClient(() => this.settings.apiToken, http);
     this.engine = new SyncEngine(
-      new TodoistClient(() => this.settings.apiToken, http),
+      this.client,
       this.vaultAdapter(),
       this.state,
-      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit() }),
+      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit(), historyAbove: this.tasksNextLine, fileDate: (path) => this.fileDate(path) }),
       () => this.saveState(),
       (msg) => this.log(msg),
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id), due: (id: string) => this.changeDue(id) };
+    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id), due: (id: string) => this.changeDue(id), home: (id: string) => void this.openHome(id) };
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, chipActions));
     this.registerEditorExtension(
       localEditTracker(
@@ -106,6 +124,18 @@ export default class InlineTasksPlugin extends Plugin {
       this.registerDomEvent(document, type, () => (this.lastInputAt = Date.now()), { capture: true });
     }
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, chipActions));
+    // For Tasks queries: `filter by function !inlineTasks.isCopy(task)` lists each task once, at its home.
+    const isCopy = copyChecker(() => this.state, () => this.tasksPlugin<{ getTasks?: () => TasksQueryTask[] }>()?.getTasks?.() ?? null);
+    (window as unknown as { inlineTasks?: unknown }).inlineTasks = { isCopy };
+    this.register(() => delete (window as unknown as { inlineTasks?: unknown }).inlineTasks);
+    this.app.workspace.onLayoutReady(() => {
+      this.queryChips = new QueryChips(
+        document.body,
+        () => this.tasksPlugin<{ getTasks?: () => TasksCacheTask[] }>()?.getTasks?.() ?? null,
+        (id, path) => clickableChip(id, this.state, path, chipActions),
+      );
+      this.register(() => this.queryChips?.stop());
+    });
     this.registerSuggests();
 
     this.registerEvent(this.app.vault.on("modify", (f) => void this.onWrite(f)));
@@ -167,6 +197,7 @@ export default class InlineTasksPlugin extends Plugin {
     });
     this.addCommand({ id: "backfill", name: "Review backfill of existing checkboxes", callback: () => this.openBackfill() });
     this.addCommand({ id: "save-log", name: "Save sync log to a note", callback: () => this.saveLog() });
+    this.addCommand({ id: "export-tasks", name: "Export tasks to JSON", callback: () => void this.exportTasks() });
 
     this.app.workspace.onLayoutReady(async () => {
       // Registered here because Obsidian fires `create` for every file while the vault loads.
@@ -178,11 +209,74 @@ export default class InlineTasksPlugin extends Plugin {
         const n = await this.engine.linkExisting();
         this.log(`no sync state on this device; linked ${n} existing task(s)`);
       }
+      if (!this.state.relaidOut || !this.state.datesMigrated) {
+        // Lines from earlier versions: the marker after the fields, or the Todoist date as `📅`.
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        const skip = view?.file && view.getMode() === "source" ? { path: view.file.path, line: view.editor.getCursor().line } : undefined;
+        const n = await this.guard(() => this.engine.migrateVault(skip));
+        if (n) this.log(`rewrote ${n} line(s) from an earlier version`);
+      }
       if (this.settings.apiToken) {
         await this.runPull();
         this.maybePromptBackfill();
       }
     });
+  }
+
+  /**
+   * Use the Tasks plugin's statuses, so a custom done or cancelled status completes the Todoist
+   * task (see setTasksStatuses). Read from its saved settings each sync, since it has no API for
+   * them and they can change at any time.
+   */
+  private async loadTasksStatuses(): Promise<void> {
+    const tasks = this.tasksPlugin<Plugin>();
+    if (!tasks) {
+      setTasksStatuses(null);
+      setTasksGlobalFilter(null);
+      setTasksDates(null);
+      this.tasksNextLine = false;
+      this.tasksFileDates = null;
+      return;
+    }
+    try {
+      const data = (await tasks.loadData()) as {
+        statusSettings?: { coreStatuses?: TasksStatus[]; customStatuses?: TasksStatus[] };
+        globalFilter?: string;
+        recurrenceOnNextLine?: boolean;
+        useFilenameAsScheduledDate?: boolean;
+        filenameAsScheduledDateFormat?: string;
+        filenameAsDateFolders?: string[];
+        setCreatedDate?: boolean;
+        setCancelledDate?: boolean;
+      } | null;
+      const s = data?.statusSettings;
+      setTasksStatuses(s ? [...(s.coreStatuses ?? []), ...(s.customStatuses ?? [])] : null);
+      setTasksGlobalFilter(data?.globalFilter, this.settings.onlyTasksGlobalFilter);
+      this.tasksNextLine = data?.recurrenceOnNextLine === true;
+      setTasksDates({ created: data?.setCreatedDate, cancelled: data?.setCancelledDate });
+      this.tasksFileDates = data?.useFilenameAsScheduledDate
+        ? {
+            enabled: true,
+            folders: Array.isArray(data.filenameAsDateFolders) ? data.filenameAsDateFolders.filter((f) => typeof f === "string") : [],
+            format: typeof data.filenameAsScheduledDateFormat === "string" ? data.filenameAsScheduledDateFormat : "",
+          }
+        : null;
+    } catch (e) {
+      this.log(`couldn't read the Tasks plugin's statuses: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** The date Tasks takes from a note's name as its tasks' scheduled date, or null. */
+  private fileDate(path: string): string | null {
+    return fileDate(path, this.tasksFileDates, (name, format) => {
+      const m = moment(name, format, true);
+      return m.isValid() ? m.format("YYYY-MM-DD") : null;
+    });
+  }
+
+  /** The Tasks plugin, if it's enabled. */
+  private tasksPlugin<T>(): T | undefined {
+    return (this.app as unknown as { plugins?: { plugins?: Record<string, T> } }).plugins?.plugins?.[TASKS_PLUGIN_ID];
   }
 
   onunload(): void {
@@ -267,7 +361,18 @@ export default class InlineTasksPlugin extends Plugin {
   private registerSuggests(): void {
     const enabled = (file: TFile | null) =>
       !!file && !!this.settings.apiToken && this.state.backfillDone && this.engine.isFileEligible(file.path);
-    this.registerEditorSuggest(new ProjectSuggest(this.app, () => this.state, enabled));
+    const projects = new ProjectSuggest(this.app, () => this.state, enabled);
+    this.registerEditorSuggest(projects);
+    // Obsidian shows only the first suggester that offers anything, in the order they were
+    // registered. The Tasks plugin's offers its fields anywhere on a task line, so if it loaded
+    // first it would hide this one. This one only offers anything after `#[`, so it goes first.
+    // `editorSuggest.suggests` isn't in Obsidian's public API; without it, the order stays as is.
+    const suggests = (this.app.workspace as unknown as { editorSuggest?: { suggests?: unknown[] } }).editorSuggest?.suggests;
+    const at = suggests?.indexOf(projects) ?? -1;
+    if (suggests && at > 0) {
+      suggests.splice(at, 1);
+      suggests.unshift(projects);
+    }
     this.registerEditorExtension(labelTrigger(enabled, (view, pos) => this.labelsFromAt(view, pos)));
   }
 
@@ -351,7 +456,7 @@ export default class InlineTasksPlugin extends Plugin {
     // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
     const replace = current.trim() === "" || (!!list && list[2] === "");
     const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
-    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, this.indentUnit(), withSubtasks);
+    const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, this.indentUnit(), withSubtasks, this.settings.tasksFields);
     // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
     await this.engine.registerImport(path, items.map((item, i) => ({ item, line: lines[i] })));
     const text = lines.join("\n");
@@ -370,6 +475,18 @@ export default class InlineTasksPlugin extends Plugin {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
     return config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
+  }
+
+  /** Open a task's home note at its line, from the house icon on the chip of a copy. */
+  private async openHome(id: string): Promise<void> {
+    const rec = this.state.tasks[id];
+    const file = rec && this.app.vault.getAbstractFileByPath(rec.path);
+    if (!(file instanceof TFile)) {
+      new Notice("Todoist: can't find this task's home note");
+      return;
+    }
+    const line = Math.max(0, findLineByMarker((await this.app.vault.cachedRead(file)).split("\n"), id));
+    await this.app.workspace.getLeaf(false).openFile(file, { eState: { line } });
   }
 
   /**
@@ -391,7 +508,7 @@ export default class InlineTasksPlugin extends Plugin {
     const lines = await read();
     const idx = findLineByMarker(lines, id);
     if (idx < 0) return;
-    const { added } = withMissingSubtasks(lines, idx, id, open, isLinked, tab);
+    const { added } = withMissingSubtasks(lines, idx, id, open, isLinked, tab, this.settings.tasksFields);
     if (!added.length) {
       new Notice(subtaskCount(this.state, id) ? "Its open subtasks are already in your notes" : "This task has no open subtasks");
       return;
@@ -400,7 +517,7 @@ export default class InlineTasksPlugin extends Plugin {
     await this.engine.registerImport(file.path, added);
     // Placed again, in case the note changed meanwhile; the ones just linked still count as missing.
     const adding = new Set(added.map((a) => a.item.id));
-    const place = (ls: string[], at: number) => withMissingSubtasks(ls, at, id, open, (t) => !adding.has(t) && isLinked(t), tab).lines;
+    const place = (ls: string[], at: number) => withMissingSubtasks(ls, at, id, open, (t) => !adding.has(t) && isLinked(t), tab, this.settings.tasksFields).lines;
     if (editor) {
       const ls = await read();
       const at = findLineByMarker(ls, id);
@@ -429,16 +546,14 @@ export default class InlineTasksPlugin extends Plugin {
     const rec = this.state.tasks[id];
     if (!rec || rec.orphaned || !this.settings.apiToken) return;
     new ProjectModal(this.app, this.state, this.state.remote[id]?.projectId, (name, chosen) => {
-      // The move goes through a `#[Name]` reference, which can't hold a `]` or tell same-named projects apart.
-      if (name.includes("]")) {
-        new Notice(`Can't move a task to “${name}” from here, because of the ]. Use Todoist instead.`);
+      // The move goes through a `#[Name]` reference: a project sharing its name with another is
+      // named by its path, `Work/Clients`. One whose name has a `]` or `/` may not be nameable.
+      const ref = chosen ? projectRef(this.state, chosen) : name;
+      if (!ref) {
+        new Notice(`Can't move a task to “${name}” from here, because no reference names only it. Use Todoist instead.`);
         return;
       }
-      if (chosen && this.engine.findProject(name) !== chosen) {
-        new Notice(`More than one project is called “${name}”, so it can't be picked from here. Use Todoist instead.`);
-        return;
-      }
-      void this.guard(() => this.addRefAndPush(id, `#[${name}]`, `moving ${id} to project "${name}"`), true);
+      void this.guard(() => this.addRefAndPush(id, `#[${ref}]`, `moving ${id} to project "${ref}"`), true);
     }).open();
   }
 
@@ -541,6 +656,66 @@ export default class InlineTasksPlugin extends Plugin {
     new Notice(`Saved ${path}`);
   }
 
+  // ------------------------------------------------------------ export
+
+  /** Fetch the project list, then let the user pick which projects to export. */
+  private async exportTasks(): Promise<void> {
+    if (!this.settings.apiToken) {
+      new Notice("Add your Todoist API token in settings first");
+      return;
+    }
+    const notice = new Notice("Todoist export: fetching projects…", 0);
+    const snap = await this.guard(() => fetchSnapshot(this.client), true);
+    notice.hide();
+    if (!snap) return;
+    new ExportModal(this.app, snap.projects, this.settings.exportProjectIds, (selected) => void this.runExport(snap, selected)).open();
+  }
+
+  /** Fetch the history for the projects picked, read the links from the vault, and write the file. */
+  private async runExport(snap: Snapshot, selected: Set<string>): Promise<void> {
+    this.settings.exportProjectIds = [...selected];
+    await this.saveAll();
+    const notice = new Notice("Todoist export: starting…", 0);
+    try {
+      const hist = await fetchHistory(this.client, snap, selected, (msg) => notice.setMessage(`Todoist export: ${msg}…`));
+      notice.setMessage("Todoist export: reading notes…");
+      const links = new Map<string, ObsidianLine[]>();
+      for (const f of this.app.vault.getMarkdownFiles()) {
+        for (const [id, lines] of linkedLines(f.path, await this.app.vault.cachedRead(f))) links.set(id, [...(links.get(id) ?? []), ...lines]);
+      }
+      const doc = buildExport(snap, hist, selected, links, this.state, {
+        pluginVersion: this.manifest.version,
+        device: this.deviceName,
+        vault: this.app.vault.getName(),
+        deviceTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+      });
+      const path = await this.writeNewFile(exportFileName(snap.fetchedAt, snap.timezone), JSON.stringify(doc, null, 2));
+      notice.hide();
+      const problems = doc.coverage.problems.length;
+      this.log(`exported ${doc.counts.open} open and ${doc.counts.completed} completed task(s), ${doc.counts.events} event(s), to ${path}; ${problems} problem(s)`);
+      for (const p of doc.coverage.problems) this.log(`export problem: ${p}`);
+      new Notice(
+        `Exported ${doc.counts.open} open and ${doc.counts.completed} completed tasks to ${path}` +
+          (problems ? `. ${problems} part${problems === 1 ? "" : "s"} couldn't be fetched: see coverage.problems in the file.` : ""),
+        problems ? 0 : 10_000,
+      );
+    } catch (e) {
+      notice.hide();
+      console.error("[inline-tasks]", e);
+      this.log(`error: export failed: ${(e as Error).message}`);
+      new Notice(`Todoist export failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Create a file at the vault's root, adding " (2)", " (3)"… to the name if it's taken. */
+  private async writeNewFile(name: string, body: string): Promise<string> {
+    const dot = name.lastIndexOf(".");
+    let path = name;
+    for (let n = 2; this.app.vault.getAbstractFileByPath(path); n++) path = `${name.slice(0, dot)} (${n})${name.slice(dot)}`;
+    await this.app.vault.create(path, body);
+    return path;
+  }
+
   // ------------------------------------------------------------ scheduling
 
   schedulePull(): void {
@@ -551,8 +726,9 @@ export default class InlineTasksPlugin extends Plugin {
 
   /** A note was written: note where the change came from, then schedule a push. */
   private async onWrite(f: TAbstractFile): Promise<void> {
-    if (!(f instanceof TFile) || f.extension !== "md" || f.path.startsWith("Inline Tasks sync log")) return;
-    const origin = this.origin.modified(f.path, await this.app.vault.read(f), Date.now());
+    if (!(f instanceof TFile) || f.extension !== "md" || f.path.startsWith("Inline Tasks sync log") || f.path === this.catalogPath()) return;
+    // Input events only reach this window's document while it has focus.
+    const origin = this.origin.modified(f.path, await this.app.vault.read(f), Date.now(), this.lastInputAt);
     if (origin !== "own") this.log(`${f.path}: changed (${origin})`);
     this.dirty.add(f.path);
     if (this.pushTimer) window.clearTimeout(this.pushTimer);
@@ -561,6 +737,7 @@ export default class InlineTasksPlugin extends Plugin {
 
   private async flush(force = false): Promise<void> {
     if (!this.settings.apiToken) return;
+    await this.loadTasksStatuses();
     const paths = [...this.dirty];
     this.dirty.clear();
     for (const path of paths) {
@@ -588,11 +765,69 @@ export default class InlineTasksPlugin extends Plugin {
     else this.refresh();
   }
 
-  private async runPull(notify = false): Promise<void> {
+  async runPull(notify = false): Promise<void> {
     if (!this.settings.apiToken) return;
+    await this.loadTasksStatuses();
     await this.guard(() => this.engine.pull(), notify);
     this.refresh();
+    await this.writeCatalog();
     if (notify) new Notice("Todoist: synced");
+  }
+
+  // ------------------------------------------------------------ projects and labels note
+
+  defaultCatalogPath(): string {
+    return normalizePath(`${this.app.vault.configDir}/${CATALOG_FILE}`);
+  }
+
+  /** Where the projects and labels note goes, from the setting. */
+  private catalogPath(): string {
+    const p = normalizePath(this.settings.catalogNotePath || this.defaultCatalogPath());
+    return p.toLowerCase().endsWith(".md") ? p : `${p}.md`;
+  }
+
+  /**
+   * Write the projects and labels note, if the setting is on and its text has changed. A note under
+   * a dot folder (such as the config folder) isn't in Obsidian's vault index, so it's written
+   * through the adapter; elsewhere through the vault, so Obsidian sees it.
+   */
+  async writeCatalog(notify = false): Promise<void> {
+    if (!this.settings.catalogNote) return;
+    if (!Object.keys(this.state.projects).length) {
+      if (notify) new Notice("The projects and labels note is written once the plugin has synced with Todoist");
+      return;
+    }
+    const path = this.catalogPath();
+    if (path.split("/").includes("..")) {
+      this.log(`error: the projects and labels note location leaves the vault: ${path}`);
+      if (notify) new Notice(`The projects and labels note must be inside the vault, not ${path}`);
+      return;
+    }
+    const body = catalogNote(this.state, this.settings);
+    const { vault } = this.app;
+    const { adapter } = vault;
+    try {
+      if ((await adapter.exists(path)) && (await adapter.read(path)) === body) {
+        if (notify) new Notice(`The projects and labels note is up to date: ${path}`);
+        return;
+      }
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      const file = vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) {
+        await vault.modify(file, body);
+      } else if (path.split("/").some((part) => part.startsWith("."))) {
+        if (dir && !(await adapter.exists(dir))) await adapter.mkdir(dir);
+        await adapter.write(path, body);
+      } else {
+        if (dir && !vault.getAbstractFileByPath(dir)) await vault.createFolder(dir);
+        await vault.create(path, body);
+      }
+      this.log(`wrote the projects and labels note: ${path}`);
+      if (notify) new Notice(`Wrote the projects and labels note: ${path}`);
+    } catch (e) {
+      this.log(`error: couldn't write the projects and labels note ${path}: ${(e as Error).message}`);
+      if (notify) new Notice(`Couldn't write ${path}: ${(e as Error).message}`);
+    }
   }
 
   /** Write the active editor's unsaved text to disk, so an explicit sync pushes what's on screen. */
@@ -636,6 +871,7 @@ export default class InlineTasksPlugin extends Plugin {
       cm?.dispatch({ effects: refreshChips.of(null) });
       if (leaf.view.getMode() === "preview") leaf.view.previewMode.rerender(true);
     });
+    this.queryChips?.refresh();
   }
 
   // ------------------------------------------------------------ backfill
