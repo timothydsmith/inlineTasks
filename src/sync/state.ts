@@ -48,6 +48,10 @@ export interface RemoteMeta {
   deadline?: string | null;
   dueString?: string;
   recurring?: boolean;
+  /** The due's time of day, `HH:MM:SS`, kept when its date changes here; null for a date alone. */
+  dueTime?: string | null;
+  /** The timezone a due time is fixed to; null for a floating one. */
+  dueTimezone?: string | null;
   checked: boolean;
   labels?: string[];
   /** Parent task in Todoist, or null for a top-level task. Undefined if not known yet. */
@@ -107,6 +111,8 @@ export interface SyncState {
   datesMigrated?: boolean;
   /** True once a full sync has brought every task's deadline to its line, after that rewrite. */
   deadlinesSynced?: boolean;
+  /** True once a full sync has brought every task's due time, kept when its date changes here. */
+  timesSynced?: boolean;
   /** True once a full sync has brought every task's repeat to its line, with Tasks fields written. */
   repeatsSynced?: boolean;
 }

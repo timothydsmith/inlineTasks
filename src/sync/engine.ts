@@ -18,7 +18,7 @@ import {
   type ParsedTask,
   type TaskFields,
 } from "../parse/taskLine";
-import { dueDate, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
+import { dueAt, dueDate, dueParts, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
 import { isoDate } from "./dates";
 import { historyLines, type CompletionEvent } from "./history";
 import { isEmpty, merge } from "./merge";
@@ -318,12 +318,20 @@ export class SyncEngine {
    */
   private dueArg(id: string, f: TaskFields): Record<string, unknown> | null {
     const meta = this.state.remote[id];
+    // A time of day set in Todoist stays when the date changes here.
+    const at = (date: string) => dueAt(date, meta?.dueTime, meta?.dueTimezone);
     const theirs = meta?.recurring ? meta.dueString : undefined;
-    if (theirs && (f.recurrence === undefined || canonicalRule(theirs) === undefined)) {
-      return f.due ? { date: f.due, string: theirs } : null;
+    const rule = theirs ? canonicalRule(theirs) : undefined;
+    // Todoist's own wording, which may have a time (`every friday at 2pm`), while the line's rule is the same.
+    if (theirs && f.due && (f.recurrence === undefined || rule === undefined || rule === f.recurrence)) {
+      return { ...at(f.due), string: theirs };
     }
-    if (f.recurrence) return { string: todoistRule(f.recurrence), ...(f.due ? { date: f.due } : {}), lang: "en" };
-    return f.due ? { date: f.due } : null;
+    if (theirs && !f.due && (f.recurrence === undefined || rule === undefined)) return null;
+    if (f.recurrence) {
+      const time = meta?.dueTime ? ` at ${meta.dueTime.slice(0, 5)}` : "";
+      return { string: todoistRule(f.recurrence) + time, ...(f.due ? at(f.due) : {}), lang: "en" };
+    }
+    return f.due ? at(f.due) : null;
   }
 
   /**
@@ -454,6 +462,8 @@ export class SyncEngine {
           deadline: item.deadline?.date ?? null,
           dueString: item.due?.string,
           recurring: item.due?.is_recurring,
+          dueTime: dueParts(item.due)?.time ?? null,
+          dueTimezone: dueParts(item.due)?.timezone ?? null,
           checked: false,
           labels: item.labels,
           parentId: item.parent_id ?? null,
@@ -1106,7 +1116,9 @@ export class SyncEngine {
   async changeDue(id: string, due: { date: string } | { words: string } | null): Promise<boolean> {
     const sent = await this.exclusive(async () => {
       if (!this.isLinked(id)) return false;
-      const value = due === null ? null : "words" in due ? dueFromWords(due.words) : { date: due.date };
+      const meta = this.state.remote[id];
+      // A picked date keeps the task's time of day, as in Todoist's scheduler.
+      const value = due === null ? null : "words" in due ? dueFromWords(due.words) : dueAt(due.date, meta?.dueTime, meta?.dueTimezone);
       const cmd: Command = { type: "item_update", uuid: makeUuid(), args: { id, due: value } };
       const res = await this.client.sync({ commands: [cmd] });
       const status = res.sync_status?.[cmd.uuid];
@@ -1222,7 +1234,8 @@ export class SyncEngine {
       !this.state.labelsSynced ||
       !this.state.subtasksSynced ||
       (this.tasksFields() && (!this.state.tasksFieldsSynced || !this.state.repeatsSynced)) ||
-      (!!this.state.datesMigrated && !this.state.deadlinesSynced);
+      (!!this.state.datesMigrated && !this.state.deadlinesSynced) ||
+      !this.state.timesSynced;
     const missing = this.missingDetails();
     // Tried once per session: a completed or deleted task isn't returned, and mustn't force a full sync every time.
     for (const id of missing) this.fetchTried.add(id);
@@ -1246,6 +1259,8 @@ export class SyncEngine {
     this.state.repeatsSynced = this.tasksFields() && (res.full_sync || !!this.state.repeatsSynced);
     // Lines rewritten for deadlines: a full sync brings every task's deadline to its line.
     if (res.full_sync && this.state.datesMigrated) this.state.deadlinesSynced = true;
+    // Every task's due time, which this version is the first to keep.
+    if (res.full_sync) this.state.timesSynced = true;
     this.noteSubtasks(res.items ?? []);
     for (const l of res.labels ?? []) {
       if (l.is_deleted) delete this.state.labels[l.id];
@@ -1306,6 +1321,8 @@ export class SyncEngine {
         deadline: item.deadline?.date ?? null,
         dueString: item.due?.string,
         recurring: item.due?.is_recurring,
+        dueTime: dueParts(item.due)?.time ?? null,
+        dueTimezone: dueParts(item.due)?.timezone ?? null,
         checked: item.checked,
         labels: item.labels,
         parentId: item.parent_id ?? null,

@@ -7,6 +7,10 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+### Fixed
+- Changing a task's date on the line or from the chip lost the time set in Todoist. The time is now kept, including on a repeating task (`every friday at 2pm`), and the chip shows it after the date. Each device runs one full sync to learn every task's time.
+- A task with a time fixed to a timezone was shown on the UTC day, which could be the day before. It's now on the day it falls on in its timezone.
+
 ## [0.4.0] - 2026-11-09
 
 ### Added

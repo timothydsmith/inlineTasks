@@ -39,7 +39,7 @@ renders as
 | Chip | Meaning |
 |---|---|
 | `#Work`, `#Inbox` | Todoist project, in its Todoist colour. Click it to move the task to another project; see [Filing a task in a project](#filing-a-task-in-a-project). |
-| `Nov 10`, `Today`, `Tomorrow` | Date; red when overdue, `↻` when recurring. Click it to change it; see [Changing a date from the chip](#changing-a-date-from-the-chip). |
+| `Nov 10`, `Today 2:00 pm` | Date, and its time if it has one; red when overdue, `↻` when recurring. Click it to change it; see [Changing a date from the chip](#changing-a-date-from-the-chip). |
 | ◎ `Nov 14` | Deadline; red when overdue. Change it with the line's `📅`. |
 | `P1` `P2` `P3` | Priority (P4 is not shown). Click it to change it; see [Setting a priority](#setting-a-priority). |
 | `@label`, or a tag icon and count | Todoist labels: the label itself when there's one, or how many when there are more (hover to see them). Click to change the task's labels; see [Labels](#labels). |
@@ -128,6 +128,7 @@ Todoist has two dates, and so does the Tasks plugin. They pair up like this:
 - **Both sync both ways.** Change either on the line or in Todoist and the other side follows. Delete one from the line to remove it in Todoist.
 - **Words** such as `friday` set the date (`⏳`), as in Todoist's Quick Add. Type a deadline as `📅 YYYY-MM-DD`.
 - **The chip** shows the date, and the deadline after a ◎. Clicking the date changes it; to change the deadline, edit the line's `📅`.
+- **Times** set in Todoist stay in Todoist: the line has the date only, and the chip shows the time after it. Changing the date, on the line or from the chip, keeps the time, as does moving a repeating task with one (`every friday at 2pm`). Removing the date removes the time with it. A time fixed to a timezone is on the day it falls on there.
 - **Lines from earlier versions** wrote the Todoist date as `📅`. Each device rewrites those as `⏳` once, the first time it starts this version, and then fetches every task's deadline from Todoist.
 
 ### Changing a date from the chip
@@ -406,7 +407,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 
 ## Known limitations
 
-- **Due times:** a time set in Todoist is shown as a date only. Changing the date in Obsidian replaces the due date with a date-only one, so the time is lost.
+- **Due times:** a time can only be set in Todoist, or by typing words such as `friday at 2pm` in the chip's date picker. The line has no way to write one.
 - **Repeating tasks:** picking a date on the chip ends the repeat (see [Changing a date from the chip](#changing-a-date-from-the-chip)); changing `⏳` on the line keeps it. Repeat rules sync only with **Write Tasks plugin fields** on, and only those both Tasks and Todoist understand (see [Repeating tasks](#repeating-tasks)).
 - **Projects:** references name a project only, not a section. Two active projects with the same name can't be told apart; the first one found is used, and the chip's project picker won't move a task to either. Nor will it move one to a project whose name contains `]`.
 - **Labels:** typed references only add labels; removing one needs the picker. If a label is added in Todoist after this device last pulled and before a typed `@label` is applied here, that newer label is dropped, because Todoist takes a task's labels as a whole list. A pull every few minutes keeps that window short. The picker pulls first, so it doesn't have this problem. A task with no labels has none on its chip to click: type `@` on its line instead.

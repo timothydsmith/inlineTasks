@@ -15,6 +15,8 @@ class FakeTodoist {
   seq = 0;
   nextId = 1;
   calls: Command[][] = [];
+  /** The sync_token of each pull, `*` for a full sync. */
+  syncTokens: string[] = [];
   projects: { id: string; name: string; seq: number; parent_id?: string | null; inbox_project?: boolean; is_archived?: boolean; is_deleted?: boolean }[] = [
     { id: "inbox", name: "Inbox", inbox_project: true, seq: 0 },
     { id: "P2", name: "Work", seq: 0 },
@@ -30,10 +32,11 @@ class FakeTodoist {
    * with a date, as for a repeat, take the date as the next occurrence.
    */
   static WORDS_DATE = "2030-01-15";
-  private due(d: { date?: string; string?: string } | null | undefined) {
+  private due(d: { date?: string; string?: string; timezone?: string } | null | undefined) {
     if (!d) return null;
-    if (d.string) return { date: d.date ?? FakeTodoist.WORDS_DATE, string: d.string, is_recurring: /^every\b/i.test(d.string) };
-    return { date: d.date! };
+    const tz = d.timezone ? { timezone: d.timezone } : {};
+    if (d.string) return { date: d.date ?? FakeTodoist.WORDS_DATE, string: d.string, is_recurring: /^every\b/i.test(d.string), ...tz };
+    return { date: d.date!, ...tz };
   }
   /** Repeating completions recorded, by task id. */
   completions = new Map<string, number>();
@@ -138,6 +141,7 @@ class FakeTodoist {
     let items: TodoistItem[] | undefined;
     let full = false;
     if (form.has("resource_types")) {
+      this.syncTokens.push(form.get("sync_token") ?? "*");
       const since = form.get("sync_token") === "*" ? 0 : Number(form.get("sync_token"));
       full = since === 0;
       items = [...this.items.values()].filter((i) => i.seq > since);
@@ -1145,6 +1149,78 @@ describe("SyncEngine", () => {
       await engine.changeDue("T2", null);
       expect(todoist.items.get("T2")!.due).toBeNull();
       expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%%");
+    });
+
+    it("keeps the time of day when it picks another date", async () => {
+      todoist.edit("T2", { due: { date: "2026-11-10T14:30:00" } });
+      await engine.pull();
+      expect(state.remote.T2.dueTime).toBe("14:30:00");
+      await engine.changeDue("T2", { date: "2026-11-14" });
+      expect(todoist.items.get("T2")!.due).toEqual({ date: "2026-11-14T14:30:00" });
+      expect(vault.files.get("Note.md")).toBe("- [ ] Trip %%td:T1%%\n\t- [ ] Book train %%td:T2%% ⏳ 2026-11-14");
+    });
+  });
+
+  describe("due times", () => {
+    const sync = async (line: string) => {
+      vault.files.set("Note.md", line);
+      await engine.pushFile("Note.md");
+      await engine.pull();
+    };
+
+    it("keeps a time set in Todoist when the date changes on the line", async () => {
+      await sync("- [ ] Call Bob ⏳ 2026-11-20");
+      todoist.edit("T1", { due: { date: "2026-11-20T09:00:00" } });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%% ⏳ 2026-11-20"); // the time isn't written
+      vault.files.set("Note.md", "- [ ] Call Bob %%td:T1%% ⏳ 2026-11-22");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.due).toEqual({ date: "2026-11-22T09:00:00" });
+      // Removing the date removes the time with it; a new date has none.
+      vault.files.set("Note.md", "- [ ] Call Bob %%td:T1%%");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Call Bob %%td:T1%% ⏳ 2026-11-25");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.due).toEqual({ date: "2026-11-25" });
+    });
+
+    it("reads a time fixed to a timezone on its own day there, and keeps it", async () => {
+      await sync("- [ ] Call Bob ⏳ 2026-11-20");
+      // 9am in Melbourne (UTC+11) on the 20th is 22:00 UTC on the 19th.
+      todoist.edit("T1", { due: { date: "2026-11-19T22:00:00Z", timezone: "Australia/Melbourne" } });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Call Bob %%td:T1%% ⏳ 2026-11-20");
+      expect(state.remote.T1).toMatchObject({ due: "2026-11-20", dueTime: "09:00:00", dueTimezone: "Australia/Melbourne" });
+      vault.files.set("Note.md", "- [ ] Call Bob %%td:T1%% ⏳ 2026-11-22");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.due).toEqual({ date: "2026-11-21T22:00:00Z", timezone: "Australia/Melbourne" });
+    });
+
+    it("keeps Todoist's wording of a repeat with a time, and adds the time to a new rule", async () => {
+      settings.tasksFields = true;
+      await sync("- [ ] Review ⏳ 2026-11-13");
+      todoist.edit("T1", { due: { date: "2026-11-13T14:00:00", string: "every Friday at 2pm", is_recurring: true } });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Review %%td:T1%% 🔁 every week on Friday ⏳ 2026-11-13");
+      vault.files.set("Note.md", "- [ ] Review %%td:T1%% 🔁 every week on Friday ⏳ 2026-11-20");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.due).toMatchObject({ date: "2026-11-20T14:00:00", string: "every Friday at 2pm" });
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] Review %%td:T1%% 🔁 every week on Monday ⏳ 2026-11-23");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.due).toMatchObject({ date: "2026-11-23T14:00:00", string: "every monday at 14:00" });
+    });
+
+    it("runs a full sync once, to learn every task's time", async () => {
+      await sync("- [ ] Call Bob");
+      expect(state.timesSynced).toBe(true);
+      delete state.timesSynced;
+      const calls = todoist.syncTokens.length;
+      await engine.pull();
+      expect(todoist.syncTokens.slice(calls)).toEqual(["*"]);
+      await engine.pull();
+      expect(todoist.syncTokens.slice(calls + 1)).not.toContain("*");
     });
   });
 
