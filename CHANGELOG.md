@@ -7,6 +7,8 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
 ### Added
 - Tasks plugin fields stay on the line and out of the Todoist title: `🛫 ➕ ✅ ❌` dates, `🔁` repeats, the priorities `🔺 ⏫ 🔼 🔽 ⏬`, `🆔`, `⛔`, `🏁`, and a `^block-link` at the end. Tasks' other spellings of the due date, `📆` and `🗓`, are read as `📅`.
 - **Write Tasks plugin fields** setting, off by default. When on:
@@ -18,7 +20,6 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
   - A task cancelled in the note gets `❌` and today's date, following Tasks' **Set cancelled date on every cancelled task**. Reopening it removes the date.
   - With Tasks' **Set created date on every added task** on, new tasks get `➕` and today's date, and imported tasks the date they were added in Todoist.
 - **Projects and labels note** setting, off by default. When on, the plugin keeps a note listing your Todoist projects and labels, how to write a line that files a task in them, and your folder mappings and excluded folders, so agents and scripts can add tasks to your notes without a Todoist connection of their own. It's rewritten whenever a sync changes it. It goes in the vault's config folder (`.obsidian/todoist-projects-and-labels.md`) unless you set another location.
-
 - Deadlines sync both ways as `📅`, the Tasks plugin's due date. The chip shows a task's deadline after a ◎.
 - **Export tasks to JSON** command: writes the open and completed tasks in projects you pick (archived ones and the Inbox included), their completions and deletions from Todoist's activity log, and the lines each task is linked to in your notes, with what the export covers.
 - The same Todoist task can be on lines in several notes, or several times in one: copy a synced line, marker and all. Every line syncs both ways, and a change on one reaches the others. The note it was created or first linked in is its home, which decides its nesting; the chip on a copy shows a house that opens the home note.
@@ -103,7 +104,8 @@ First release. Needs Obsidian 1.8.7 or later.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
-[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.3.0...dev
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.4.0...dev
+[0.4.0]: https://github.com/timothydsmith/inlineTasks/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/timothydsmith/inlineTasks/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/timothydsmith/inlineTasks/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/timothydsmith/inlineTasks/releases/tag/0.1.0

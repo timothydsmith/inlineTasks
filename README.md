@@ -10,7 +10,7 @@ renders as
 
 > ☐ Call Bob about the contract `■ #Work  Nov 10  P1`
 
-**Status:** pre-release (0.1.0). Tested against the live Todoist API on Obsidian desktop (Windows) and Android, with Obsidian Sync between them. Not yet tested on iOS. See [CHANGELOG.md](CHANGELOG.md).
+**Status:** pre-release (0.4.0). Tested against the live Todoist API on Obsidian desktop (Windows) and Android, with Obsidian Sync between them. Not yet tested on iOS. See [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 

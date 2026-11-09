@@ -1,6 +1,6 @@
 {
   "name": "obsidian-inline-tasks",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Two-way sync between Obsidian checkboxes and Todoist, rendered inline as chips.",
   "main": "main.js",
   "scripts": {
