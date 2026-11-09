@@ -203,6 +203,7 @@ Lines are written so the [Tasks plugin](https://github.com/obsidian-tasks-group/
 
   Without the Tasks plugin, `[x]`, `[X]` and `[-]` complete the task, and new tasks are made from `[ ]` and `[/]` lines. A status Tasks doesn't define keeps that meaning (`[X]` is done). A task Todoist reopens goes back to `[ ]`, and one Todoist completes becomes `[x]`.
 - **`🏁 delete`:** Tasks deletes such a line when you complete the task. The plugin completes its Todoist task at the first pull at least 30 seconds later (pulls run every 5 minutes by default), unless the line has turned up in another note by then. Deleting a `🏁 delete` line yourself does the same. `🏁 keep` and lines without `🏁` are only unlinked when deleted; their Todoist task is left as it is.
+- **Query results, reading view and the edit dialog:** ticking a task in a Tasks query, in reading view, or editing it in Tasks' edit dialog syncs like an edit on its line. Tasks' query results and its reading view show each task's chip after its text. A query result gets no chip if it can't be told apart from another Todoist task with the same text, status and note.
 - **Lines from earlier versions** had the marker last, which hides their fields from Tasks. Each device moves it in front of the fields once, the first time it starts this version, and any line it missed moves the next time its note syncs.
 
 #### Repeating tasks

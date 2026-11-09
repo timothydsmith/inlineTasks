@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INPUT_WINDOW_MS, isLocalChange, LOCAL_WINDOW_MS, OriginTracker, QUIET_MS } from "../src/sync/origin";
+import { INPUT_WINDOW_MS, isLocalChange, LOCAL_WINDOW_MS, OriginTracker, QUIET_MS, WRITE_AFTER_INPUT_MS } from "../src/sync/origin";
 
 describe("isLocalChange", () => {
   const now = 1_000_000_000;
@@ -73,6 +73,14 @@ describe("OriginTracker", () => {
     o.modified("a.md", "x", t0);
     o.localEdit("a.md", t0 + 1_000);
     expect(o.status("a.md", t0 + 1_500)).toEqual({ hold: false, fromElsewhere: false });
+  });
+
+  it("counts another plugin's write right after a click here as local (Tasks' query results)", () => {
+    const o = new OriginTracker();
+    expect(o.modified("a.md", "x", t0 + 300, t0)).toBe("local");
+    expect(o.status("a.md", t0 + 500)).toEqual({ hold: false, fromElsewhere: false });
+    // Long after the last input, a write is still from elsewhere.
+    expect(o.modified("a.md", "y", t0 + WRITE_AFTER_INPUT_MS + LOCAL_WINDOW_MS + 1, t0)).toBe("elsewhere");
   });
 
   it("follows renames", () => {

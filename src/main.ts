@@ -22,7 +22,8 @@ import { localEditTracker } from "./ui/localEdits";
 import { LabelModal, type LabelPick } from "./ui/labelModal";
 import { labelTrigger } from "./ui/labelTrigger";
 import { ProjectSuggest } from "./ui/projectSuggest";
-import { readingChipProcessor } from "./ui/readingChip";
+import { QueryChips, type TasksCacheTask } from "./ui/queryChips";
+import { clickableChip, readingChipProcessor } from "./ui/readingChip";
 
 /** The Tasks plugin's id, for reading its statuses. */
 const TASKS_PLUGIN_ID = "obsidian-tasks-plugin";
@@ -53,6 +54,8 @@ export default class InlineTasksPlugin extends Plugin {
   private pushTimer: number | null = null;
   private pullTimer: number | null = null;
   private chipVersion = 0;
+  /** Chips in the Tasks plugin's query results. */
+  private queryChips: QueryChips | null = null;
   private lastErrorAt = 0;
   private backfillPrompted = false;
   /** Where each note's latest change came from (see sync/origin.ts). */
@@ -115,6 +118,14 @@ export default class InlineTasksPlugin extends Plugin {
       this.registerDomEvent(document, type, () => (this.lastInputAt = Date.now()), { capture: true });
     }
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, chipActions));
+    this.app.workspace.onLayoutReady(() => {
+      this.queryChips = new QueryChips(
+        document.body,
+        () => this.tasksPlugin<{ getTasks?: () => TasksCacheTask[] }>()?.getTasks?.() ?? null,
+        (id, path) => clickableChip(id, this.state, path, chipActions),
+      );
+      this.register(() => this.queryChips?.stop());
+    });
     this.registerSuggests();
 
     this.registerEvent(this.app.vault.on("modify", (f) => void this.onWrite(f)));
@@ -208,7 +219,7 @@ export default class InlineTasksPlugin extends Plugin {
    * them and they can change at any time.
    */
   private async loadTasksStatuses(): Promise<void> {
-    const tasks = (this.app as unknown as { plugins?: { plugins?: Record<string, Plugin> } }).plugins?.plugins?.[TASKS_PLUGIN_ID];
+    const tasks = this.tasksPlugin<Plugin>();
     if (!tasks) {
       setTasksStatuses(null);
       return;
@@ -220,6 +231,11 @@ export default class InlineTasksPlugin extends Plugin {
     } catch (e) {
       this.log(`couldn't read the Tasks plugin's statuses: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  /** The Tasks plugin, if it's enabled. */
+  private tasksPlugin<T>(): T | undefined {
+    return (this.app as unknown as { plugins?: { plugins?: Record<string, T> } }).plugins?.plugins?.[TASKS_PLUGIN_ID];
   }
 
   onunload(): void {
@@ -670,7 +686,8 @@ export default class InlineTasksPlugin extends Plugin {
   /** A note was written: note where the change came from, then schedule a push. */
   private async onWrite(f: TAbstractFile): Promise<void> {
     if (!(f instanceof TFile) || f.extension !== "md" || f.path.startsWith("Inline Tasks sync log") || f.path === this.catalogPath()) return;
-    const origin = this.origin.modified(f.path, await this.app.vault.read(f), Date.now());
+    // Input events only reach this window's document while it has focus.
+    const origin = this.origin.modified(f.path, await this.app.vault.read(f), Date.now(), this.lastInputAt);
     if (origin !== "own") this.log(`${f.path}: changed (${origin})`);
     this.dirty.add(f.path);
     if (this.pushTimer) window.clearTimeout(this.pushTimer);
@@ -813,6 +830,7 @@ export default class InlineTasksPlugin extends Plugin {
       cm?.dispatch({ effects: refreshChips.of(null) });
       if (leaf.view.getMode() === "preview") leaf.view.previewMode.rerender(true);
     });
+    this.queryChips?.refresh();
   }
 
   // ------------------------------------------------------------ backfill
