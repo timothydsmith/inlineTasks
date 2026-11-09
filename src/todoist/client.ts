@@ -21,9 +21,12 @@ const RATE_LIMIT_RETRIES = 3;
 export type HttpFn = (req: HttpRequest) => Promise<{ status: number; json: unknown }>;
 
 export interface TodoistDue {
-  date: string; // "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS[Z]"
+  /** "YYYY-MM-DD"; with a time, "YYYY-MM-DDTHH:MM:SS" (floating), or in UTC ending "Z" for a fixed timezone. */
+  date: string;
   is_recurring?: boolean;
   string?: string;
+  /** The timezone of a time fixed to one, null for a floating time or a date. */
+  timezone?: string | null;
 }
 
 export interface TodoistItem {
@@ -165,9 +168,66 @@ export function taskUrl(id: string): string {
   return `https://app.todoist.com/app/task/${id}`;
 }
 
-/** Todoist due → YYYY-MM-DD (time component dropped). */
+/** Todoist due → YYYY-MM-DD, the day it falls on where it's set (see dueParts). */
 export function dueDate(due: TodoistDue | null | undefined): string | null {
-  return due?.date ? due.date.slice(0, 10) : null;
+  return dueParts(due)?.date ?? null;
+}
+
+/**
+ * A Todoist due's day (`YYYY-MM-DD`) and time of day (`HH:MM:SS`, null for a date alone). A
+ * floating time is as written; one fixed to a timezone, which Todoist gives in UTC, is in that
+ * timezone, so a 9am task in Melbourne is on its own day, not the UTC one before.
+ */
+export function dueParts(due: TodoistDue | null | undefined): { date: string; time: string | null; timezone: string | null } | null {
+  if (!due?.date) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2})(?::(\d{2}))?(?:\.\d+)?(Z)?)?$/.exec(due.date);
+  if (!m) return { date: due.date.slice(0, 10), time: null, timezone: null };
+  const [, date, hm, ss, utc] = m;
+  if (!hm) return { date, time: null, timezone: null };
+  if (!utc) return { date, time: `${hm}:${ss ?? "00"}`, timezone: null };
+  const timezone = due.timezone || "UTC";
+  const local = wallTime(new Date(due.date), timezone);
+  return local ? { ...local, timezone } : { date, time: `${hm}:${ss ?? "00"}`, timezone: "UTC" };
+}
+
+/** The day and time of day an instant is in a timezone, or null if the timezone isn't known. */
+function wallTime(at: Date, timeZone: string): { date: string; time: string } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).formatToParts(at);
+    const p = (t: string) => parts.find((x) => x.type === t)?.value ?? "00";
+    return { date: `${p("year")}-${p("month")}-${p("day")}`, time: `${p("hour")}:${p("minute")}:${p("second")}` };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `date` (and `timezone`) of a Todoist due on `date` at a time of day kept from before: floating
+ * as `YYYY-MM-DDTHH:MM:SS`, or for a time fixed to a timezone, that time there, in UTC. A date alone
+ * without a time.
+ */
+export function dueAt(date: string, time?: string | null, timezone?: string | null): { date: string; timezone?: string } {
+  if (!time) return { date };
+  if (!timezone) return { date: `${date}T${time}` };
+  // The UTC instant whose wall time in the timezone is date and time: guess, then correct by the
+  // offset there, twice, for a guess on the other side of a daylight-saving change.
+  const target = Date.parse(`${date}T${time}Z`);
+  let at = target;
+  for (let i = 0; i < 2; i++) {
+    const wall = wallTime(new Date(at), timezone);
+    if (!wall) return { date: `${date}T${time}` };
+    at += target - Date.parse(`${wall.date}T${wall.time}Z`);
+  }
+  return { date: new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z"), timezone };
 }
 
 export function uuid(): string {

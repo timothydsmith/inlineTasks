@@ -63,7 +63,8 @@ export function renderChip(markerId: string, state: SyncState, path?: string, do
       if (color) s.style.color = color;
     }
     if (meta.due) {
-      const s = add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + (meta.recurring ? " ↻" : ""));
+      const time = meta.dueTime ? ` ${formatTime(meta.dueTime)}` : "";
+      const s = add(`inline-tasks-due${isOverdue(meta.due) && !meta.checked ? " is-overdue" : ""}`, formatDue(meta.due) + time + (meta.recurring ? " ↻" : ""));
       s.title = "Click to change its date";
     }
     if (meta.deadline) {
@@ -99,6 +100,12 @@ export function renderChip(markerId: string, state: SyncState, path?: string, do
 
 function isOverdue(date: string): boolean {
   return date < new Date().toISOString().slice(0, 10);
+}
+
+/** A time of day, `HH:MM:SS`, as the device writes times: `2:00 pm` or `14:00`. */
+function formatTime(time: string): string {
+  const [h, m] = time.split(":").map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 function formatDue(date: string): string {
