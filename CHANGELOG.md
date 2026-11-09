@@ -14,6 +14,7 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
   - `p1`–`p4` typed on a line, or a priority picked on the chip, becomes the Tasks priority.
   - A task completed in Todoist gets `✅` and the date it was completed, and one ticked in the note gets today's date. Unticking removes the date.
   - Imported tasks come with their priority.
+- **Projects and labels note** setting, off by default. When on, the plugin keeps a note listing your Todoist projects and labels, how to write a line that files a task in them, and your folder mappings and excluded folders, so agents and scripts can add tasks to your notes without a Todoist connection of their own. It's rewritten whenever a sync changes it. It goes in the vault's config folder (`.obsidian/todoist-projects-and-labels.md`) unless you set another location.
 
 - Deadlines sync both ways as `📅`, the Tasks plugin's due date. The chip shows a task's deadline after a ◎.
 - Nested projects: `#[Work/Clients/Acme]` files a task in Acme, under Clients, under Work, creating any of them that doesn't exist. The project menus match paths, offer to create nested projects, and name a project by its path when another has the same name.
