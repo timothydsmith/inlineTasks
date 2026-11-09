@@ -31,6 +31,12 @@ export interface TaskRecord {
    * note, a pull then completes the Todoist task (see SyncEngine.completeDeleted).
    */
   gone?: number;
+  /**
+   * Todoist moved this repeating task on, from `from` to `to`, and its completions there are still
+   * to be found in Todoist's activity log, which can lag a little. `line` is its home line as it
+   * was. Checked at each pull until `until` (ms); see SyncEngine.checkHistory.
+   */
+  historyDue?: { from: string; to: string; line: string; until: number };
 }
 
 /** Remote-only metadata shown on the chip. */

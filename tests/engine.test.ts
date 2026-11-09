@@ -36,6 +36,19 @@ class FakeTodoist {
   }
   /** Repeating completions recorded, by task id. */
   completions = new Map<string, number>();
+  /** The activity log's completions, newest last. */
+  events: { object_type: string; object_id: string; event_type: string; event_date: string; extra_data: Record<string, unknown> }[] = [];
+  private logCompletion(id: string, occurrence: string) {
+    this.events.push({ object_type: "item", object_id: id, event_type: "completed", event_date: new Date().toISOString(), extra_data: { content: this.items.get(id)!.content, completed_due_date_local: `${occurrence}T23:59:59` } });
+  }
+  /** Simulate completing a repeating task in the Todoist app: it moves a week on. */
+  completeRecurring(id: string) {
+    const it = this.items.get(id)!;
+    this.logCompletion(id, it.due!.date);
+    const next = new Date(`${it.due!.date}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 7);
+    this.edit(id, { due: { ...it.due!, date: next.toISOString().slice(0, 10) } });
+  }
 
   /** An order key after every existing subtask of `parent`, as Todoist gives a task added or moved there. */
   private lastKey(parent: string | null | undefined): string {
@@ -52,6 +65,12 @@ class FakeTodoist {
   }
 
   http = async (req: HttpRequest) => {
+    if (req.url.includes("/activities")) {
+      const q = new URL(req.url).searchParams;
+      const types: string[] = JSON.parse(q.get("object_event_types") ?? "[]");
+      const results = this.events.filter((e) => e.object_id === q.get("object_id") && (!types.length || types.includes(`${e.object_type}:${e.event_type}`))).reverse();
+      return { status: 200, json: { results } };
+    }
     const form = new URLSearchParams(req.body);
     const commands: Command[] = form.has("commands") ? JSON.parse(form.get("commands")!) : [];
     this.calls.push(commands);
@@ -92,11 +111,13 @@ class FakeTodoist {
           if ("order_key" in a) it.order_key = a.order_key;
         } else if (c.type === "item_close" && it.due?.is_recurring) {
           // A repeating task moves to its next date (here: a week on) and stays open.
+          this.logCompletion(it.id, it.due.date);
           const next = new Date(`${it.due.date}T00:00:00Z`);
           next.setUTCDate(next.getUTCDate() + 7);
           it.due = { ...it.due, date: next.toISOString().slice(0, 10) };
           this.completions.set(it.id, (this.completions.get(it.id) ?? 0) + 1);
         } else if (c.type === "item_update_date_complete") {
+          this.logCompletion(it.id, it.due!.date);
           it.due = this.due(a.due);
           this.completions.set(it.id, (this.completions.get(it.id) ?? 0) + 1);
         } else if (c.type === "item_close") it.checked = true;
@@ -1469,6 +1490,88 @@ describe("SyncEngine", () => {
     });
   });
 
+  describe("completions of repeating tasks in Todoist", () => {
+    const today = isoDate(new Date());
+    const repeating = async (content = "- [ ] Water 🔁 every week ⏳ 2026-11-10") => {
+      settings.tasksFields = true;
+      vault.files.set("Note.md", content);
+      await engine.pushFile("Note.md");
+      await engine.pull();
+    };
+
+    it("leaves a ticked line for each, newest nearest, as Tasks does", async () => {
+      await repeating();
+      todoist.completeRecurring("T1");
+      todoist.completeRecurring("T1");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(
+        [
+          "- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-24",
+          `- [x] Water 🔁 every week ⏳ 2026-11-17 ✅ ${today}`,
+          `- [x] Water 🔁 every week ⏳ 2026-11-10 ✅ ${today}`,
+        ].join("\n"),
+      );
+      // Nothing more at the next pull.
+      await engine.pull();
+      expect(vault.files.get("Note.md")!.split("\n")).toHaveLength(3);
+    });
+
+    it("looks again at the next pull for a completion not yet in the activity log", async () => {
+      await repeating();
+      todoist.completeRecurring("T1");
+      const logged = todoist.events.splice(0); // Todoist hasn't logged it yet
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17");
+      expect(state.tasks.T1.historyDue).toMatchObject({ from: "2026-11-10", to: "2026-11-17" });
+      todoist.events.push(...logged);
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17
+- [x] Water 🔁 every week ⏳ 2026-11-10 ✅ ${today}`);
+      expect(state.tasks.T1.historyDue).toBeUndefined();
+    });
+
+    it("puts them above the task when Tasks puts the next occurrence below", async () => {
+      settings.historyAbove = true;
+      await repeating();
+      todoist.completeRecurring("T1");
+      todoist.completeRecurring("T1");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(
+        [
+          `- [x] Water 🔁 every week ⏳ 2026-11-10 ✅ ${today}`,
+          `- [x] Water 🔁 every week ⏳ 2026-11-17 ✅ ${today}`,
+          "- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-24",
+        ].join("\n"),
+      );
+    });
+
+    it("keeps them below the task's subtasks", async () => {
+      await repeating("- [ ] Water 🔁 every week ⏳ 2026-11-10\n\t- [ ] Fill can\n- [ ] Next");
+      todoist.completeRecurring("T1");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe(
+        `- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17\n\t- [ ] Fill can %%td:T2%%\n- [x] Water 🔁 every week ⏳ 2026-11-10 ✅ ${today}\n- [ ] Next %%td:T3%%`,
+      );
+    });
+
+    it("leaves none for a date moved in Todoist, a date moved on the line, or with Tasks fields off", async () => {
+      await repeating();
+      todoist.edit("T1", { due: { date: "2026-11-12", string: "every week", is_recurring: true } });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-12");
+
+      vault.files.set("Note.md", "- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-19");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-19");
+
+      settings.tasksFields = false;
+      todoist.completeRecurring("T1");
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-26");
+    });
+  });
+
   describe("repeats", () => {
     const sent = (from: number) => todoist.calls.slice(from).flat();
 
@@ -1572,7 +1675,9 @@ describe("SyncEngine", () => {
       vault.files.set("Note.md", "- [x] Water %%td:T1%% 🔁 every week ⏳ 2026-11-10");
       await engine.pushFile("Note.md");
       await engine.pull();
-      expect(vault.files.get("Note.md")).toBe("- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17");
+      // Kept as a ticked line, as Tasks would have (see "completions of repeating tasks in Todoist").
+      expect(vault.files.get("Note.md")).toBe(`- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17
+- [x] Water 🔁 every week ⏳ 2026-11-10 ✅ ${isoDate(new Date())}`);
       expect(todoist.completions.get("T1")).toBe(1);
     });
 

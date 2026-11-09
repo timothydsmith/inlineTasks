@@ -1,4 +1,5 @@
 import {
+  blockEnd,
   createsTask,
   findLineByMarker,
   findTasks,
@@ -17,6 +18,7 @@ import {
 } from "../parse/taskLine";
 import { dueDate, uuid as makeUuid, type Command, type TodoistClient, type TodoistItem } from "../todoist/client";
 import { isoDate } from "./dates";
+import { historyLines, type CompletionEvent } from "./history";
 import { isEmpty, merge } from "./merge";
 import { canonicalRule, todoistRule } from "./recurrence";
 import { childProject, findProjectId, splitProjectPath } from "./projects";
@@ -42,6 +44,11 @@ export interface EngineSettings {
   indent?: string;
   /** Write Todoist priorities as Tasks priorities on the line, and ✅ done dates. */
   tasksFields?: boolean;
+  /**
+   * Tasks puts a repeating task's next occurrence on the line below the ticked one (its "next
+   * recurrence appears on the line below" setting), so history lines go above the task's line.
+   */
+  historyAbove?: boolean;
 }
 
 export interface PushOptions {
@@ -75,6 +82,8 @@ interface LineTarget {
   /** Its lines are from before deadlines synced: a lone `📅` is its date (see readLine). */
   legacy?: boolean;
 }
+/** How long a repeating task's completions in Todoist are looked for in its activity log, which can lag. */
+export const HISTORY_WAIT_MS = 15 * 60_000;
 /**
  * How long a `🏁 delete` line must have been gone before its Todoist task is completed, so a line
  * cut from one note and pasted into another is found there first.
@@ -1524,15 +1533,16 @@ export class SyncEngine {
     const contents = new Map<string, string>();
     for (const item of items) {
       const rec = this.state.tasks[item.id];
-      const found: { task: ParsedTask; mtime: number }[] = [];
+      const found: { task: ParsedTask; mtime: number; path: string }[] = [];
       for (const p of this.locations(rec)) {
         if (!contents.has(p)) contents.set(p, await this.readOrEmpty(p));
         const content = contents.get(p)!;
         const mtime = this.vault.mtime(p);
-        for (const { task } of findTasks(content)) if (task.todoistId === item.id) found.push({ task: this.readLine(task, rec), mtime });
+        for (const { task } of findTasks(content)) if (task.todoistId === item.id) found.push({ task: this.readLine(task, rec), mtime, path: p });
         paths.push(p);
       }
       if (!found.length) continue; // moved; the index will re-adopt it on the next push
+      const home = found.find((f) => f.path === rec.path)?.task;
       found.sort((a, b) => b.mtime - a.mtime);
       const legacy = this.isLegacy(rec);
       const local = this.combinedLocal(found.map((f) => f.task), rec);
@@ -1545,10 +1555,89 @@ export class SyncEngine {
       // deadline from now on (see readLine).
       if (legacy && !isEmpty(m.pull)) m.merged.deadline = found[0].task.deadline ?? null;
       targets.set(item.id, { fields: m.merged, title: rec.base.text, completedAt: item.completed_at, legacy });
+      if (home) this.noteHistory(item, rec, home, m.merged);
       rec.base = m.merged;
     }
     await this.writeLines(targets, paths);
+    await this.checkHistory();
     return commands;
+  }
+
+  /**
+   * This pull moves a repeating task's date on: note that its completions in Todoist are to be kept
+   * as ticked lines (see history.ts). Only with Tasks fields written, and only when Todoist moved
+   * the date: if the line did, as when Tasks ticked it, Tasks has already left its own.
+   */
+  private noteHistory(item: TodoistItem, rec: TaskRecord, home: ParsedTask, merged: TaskFields): void {
+    const from = rec.base.due;
+    const to = merged.due;
+    if (!this.tasksFields() || !item.due?.is_recurring || !from || !to || to <= from || home.due !== from) return;
+    const was = rec.historyDue;
+    rec.historyDue = {
+      from: was && was.from < from ? was.from : from,
+      to,
+      line: was && was.from < from ? was.line : serializeTask(withTitle(home, rec.base.text)),
+      until: Date.now() + HISTORY_WAIT_MS,
+    };
+  }
+
+  /**
+   * Look for the completions in Todoist of repeating tasks it moved on, and keep each as a ticked
+   * line. One not in the activity log yet is looked for again at the next pull, for a while.
+   */
+  private async checkHistory(): Promise<void> {
+    for (const [id, rec] of Object.entries(this.state.tasks)) {
+      const due = rec.historyDue;
+      if (!due) continue;
+      const line = parseTaskLine(due.line);
+      if (!line || !this.tasksFields()) {
+        delete rec.historyDue;
+        continue;
+      }
+      let events: CompletionEvent[];
+      try {
+        const res = await this.client.get<{ results?: CompletionEvent[] }>("activities", {
+          object_id: id,
+          object_event_types: ["item:completed"],
+          limit: 100,
+        });
+        events = res.results ?? [];
+      } catch (e) {
+        this.log(`couldn't read Todoist's activity log for "${line.text}", so its completions there get no ticked lines: ${(e as Error).message}`);
+        delete rec.historyDue;
+        continue;
+      }
+      const history = historyLines(line, id, events, due.from, due.to);
+      if (history.length) {
+        await this.addHistory(id, history);
+        this.log(`"${line.text}": ${history.length} completion(s) in Todoist, kept as ticked lines`);
+        delete rec.historyDue;
+      } else if (Date.now() > due.until) {
+        this.log(`"${line.text}": no completion in Todoist's activity log from ${due.from} to ${due.to}, so no ticked line`);
+        delete rec.historyDue;
+      } else {
+        this.log(`"${line.text}": Todoist's activity log has ${events.length} event(s), none a completion from ${due.from} to ${due.to} yet; looking again at the next pull`);
+      }
+    }
+  }
+
+  /**
+   * Put history lines next to the task's line in its home note, newest nearest: below it and its
+   * subtasks, or above it, as Tasks places a repeating task's lines.
+   */
+  private async addHistory(id: string, history: string[]): Promise<void> {
+    const rec = this.state.tasks[id];
+    if (!rec) return;
+    const above = !!this.settings().historyAbove;
+    await this.vault.process(rec.path, (content) => {
+      const lines = content.split("\n");
+      const at = findLineByMarker(lines, id);
+      if (at < 0) return content;
+      if (above) lines.splice(at, 0, ...[...history].reverse());
+      // Below its subtasks, so they stay under it.
+      else lines.splice(blockEnd(lines, at) + 1, 0, ...history);
+      return lines.join("\n");
+    });
   }
 
   /**

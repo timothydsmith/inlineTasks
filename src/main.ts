@@ -55,6 +55,8 @@ export default class InlineTasksPlugin extends Plugin {
   private pushTimer: number | null = null;
   private pullTimer: number | null = null;
   private chipVersion = 0;
+  /** Tasks puts a repeating task's next occurrence below the ticked line (see EngineSettings.historyAbove). */
+  private tasksNextLine = false;
   /** Chips in the Tasks plugin's query results. */
   private queryChips: QueryChips | null = null;
   private lastErrorAt = 0;
@@ -100,7 +102,7 @@ export default class InlineTasksPlugin extends Plugin {
       this.client,
       this.vaultAdapter(),
       this.state,
-      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit() }),
+      () => ({ ...this.settings, canCreate: this.canCreate, indent: this.indentUnit(), historyAbove: this.tasksNextLine }),
       () => this.saveState(),
       (msg) => this.log(msg),
     );
@@ -234,10 +236,12 @@ export default class InlineTasksPlugin extends Plugin {
       const data = (await tasks.loadData()) as {
         statusSettings?: { coreStatuses?: TasksStatus[]; customStatuses?: TasksStatus[] };
         globalFilter?: string;
+        recurrenceOnNextLine?: boolean;
       } | null;
       const s = data?.statusSettings;
       setTasksStatuses(s ? [...(s.coreStatuses ?? []), ...(s.customStatuses ?? [])] : null);
       setTasksGlobalFilter(data?.globalFilter, this.settings.onlyTasksGlobalFilter);
+      this.tasksNextLine = data?.recurrenceOnNextLine === true;
     } catch (e) {
       this.log(`couldn't read the Tasks plugin's statuses: ${e instanceof Error ? e.message : String(e)}`);
     }
