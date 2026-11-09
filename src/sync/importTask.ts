@@ -1,4 +1,5 @@
-import { blockEnd, parseTaskLine, serializeTask, withLinePriority } from "../parse/taskLine";
+import { blockEnd, parseTaskLine, serializeTask, withLinePriority, type TasksFields } from "../parse/taskLine";
+import { canonicalRule } from "./recurrence";
 import { dueDate, type TodoistItem } from "../todoist/client";
 import { childLines, compareSiblings } from "./order";
 
@@ -10,7 +11,7 @@ const byTodoistOrder = (a: TodoistItem, b: TodoistItem) =>
  * Lines for importing an existing Todoist task into a note: the task, then (unless `withSubtasks`
  * is false) its open subtasks beneath it, each level indented one `tab` further, in Todoist's
  * order. Subtasks already linked to a line elsewhere are left out, with their own subtasks. With
- * `tasksFields`, each line carries its Todoist priority as a Tasks priority.
+ * `tasksFields`, each line carries its Todoist priority and repeat as Tasks fields.
  */
 export function importLines(
   root: TodoistItem,
@@ -84,7 +85,18 @@ export function withMissingSubtasks(
   return { lines: out, added };
 }
 
-/** One task as a checkbox line: its title, marker and `📅` due date, and with `tasksFields` its Tasks priority. */
+/** A Todoist task's priority and repeat as Tasks fields. A repeat Tasks wouldn't understand is left out. */
+function importedFields(item: TodoistItem): TasksFields {
+  const fields = withLinePriority(undefined, 5 - item.priority);
+  const rule = item.due?.is_recurring && item.due.string ? canonicalRule(item.due.string) : undefined;
+  if (rule) fields.recurrence = rule;
+  return fields;
+}
+
+/**
+ * One task as a checkbox line: its title, marker, date and deadline, and with `tasksFields` its
+ * Tasks priority and repeat.
+ */
 export function taskLine(item: TodoistItem, indent: string, tasksFields = false): string {
   return serializeTask({
     prefix: `${indent}- `,
@@ -100,6 +112,7 @@ export function taskLine(item: TodoistItem, indent: string, tasksFields = false)
     labelRefs: [],
     priorityRef: null,
     dueRef: null,
-    fields: tasksFields ? withLinePriority(undefined, 5 - item.priority) : undefined,
+    deadline: item.deadline?.date ?? null,
+    fields: tasksFields ? importedFields(item) : undefined,
   });
 }

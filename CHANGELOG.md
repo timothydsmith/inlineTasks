@@ -13,7 +13,8 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
   - Each task's Todoist priority is written on its line as a Tasks priority (🔺 p1, ⏫ p2, 🔼 p3, nothing for p4), and changing either one changes the other.
   - `p1`–`p4` typed on a line, or a priority picked on the chip, becomes the Tasks priority.
   - A task completed in Todoist gets `✅` and the date it was completed, and one ticked in the note gets today's date. Unticking removes the date.
-  - Imported tasks come with their priority.
+  - A `🔁` repeat makes the Todoist task repeat, from the line's date, and a repeating Todoist task gets a `🔁`. Changing or removing either changes the other. Rules only one side understands stay where they were written.
+  - Imported tasks come with their priority and repeat.
 - **Projects and labels note** setting, off by default. When on, the plugin keeps a note listing your Todoist projects and labels, how to write a line that files a task in them, and your folder mappings and excluded folders, so agents and scripts can add tasks to your notes without a Todoist connection of their own. It's rewritten whenever a sync changes it. It goes in the vault's config folder (`.obsidian/todoist-projects-and-labels.md`) unless you set another location.
 
 - Deadlines sync both ways as `📅`, the Tasks plugin's due date. The chip shows a task's deadline after a ◎.
@@ -26,6 +27,10 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - Only `[x]`, `[X]` and `[-]` (cancelled) complete the Todoist task. Other statuses, such as Tasks' `[/]` (in progress), leave it open and are kept on the line. New tasks are made from `[ ]` and `[/]` lines only.
 
 ### Fixed
+- Ticking a repeating task with the Tasks plugin, which adds a line for the next occurrence with the same marker, completed the Todoist task and then reopened it. Now it completes that occurrence in Todoist and moves the task to the new line's date; the ticked line loses its marker and stays as a record.
+- Changing the date on the line of a task that repeats in Todoist ended the repeat. It now moves the next occurrence.
+- A line copied with its marker no longer fights the original: the first line with a marker is the task.
+- Imported tasks come with their deadline.
 - With the Tasks plugin installed, typing `#[` on a task line opened Tasks' menu instead of the project menu.
 
 ## [0.3.0] - 2026-11-06

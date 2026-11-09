@@ -43,6 +43,12 @@ export interface TaskFields {
    * when the **Write Tasks plugin fields** setting is on; missing otherwise.
    */
   priority?: number;
+  /**
+   * The repeat, as a canonical rule (see canonicalRule), null for none. Only tracked when the
+   * **Write Tasks plugin fields** setting is on, and missing when a rule doesn't translate.
+   * Not read or written by the line parser: the line's rule is `fields.recurrence`.
+   */
+  recurrence?: string | null;
 }
 
 export interface ParsedTask extends TaskFields {

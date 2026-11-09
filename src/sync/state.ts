@@ -88,6 +88,8 @@ export interface SyncState {
   datesMigrated?: boolean;
   /** True once a full sync has brought every task's deadline to its line, after that rewrite. */
   deadlinesSynced?: boolean;
+  /** True once a full sync has brought every task's repeat to its line, with Tasks fields written. */
+  repeatsSynced?: boolean;
 }
 
 export interface ProjectInfo {
