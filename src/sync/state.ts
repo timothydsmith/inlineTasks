@@ -1,7 +1,13 @@
 import type { TaskFields } from "../parse/taskLine";
 
 export interface TaskRecord {
+  /**
+   * The task's home note: where it was created or first linked. Its line there decides the task's
+   * nesting and subtask order. Its other lines, its copies, sync only its fields.
+   */
   path: string;
+  /** Other notes with a line for the task (a copy), besides its home. Missing means none. */
+  copies?: string[];
   /** Field values at the last successful sync (three-way merge base). */
   base: TaskFields;
   /**

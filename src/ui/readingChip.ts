@@ -22,7 +22,7 @@ export function readingChipProcessor(getState: () => SyncState, actions: ChipAct
       const m = MARKER_RE.exec(lines[info.lineStart + rel] ?? "");
       if (!m) return;
       const id = m[1];
-      const chip = renderChip(id, getState());
+      const chip = renderChip(id, getState(), ctx.sourcePath);
       // The subtask count and the project have their own actions, rather than following the link.
       chip.addEventListener("click", (e) => {
         const action = chipAction(e.target, actions);

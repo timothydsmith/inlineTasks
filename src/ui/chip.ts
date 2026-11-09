@@ -7,8 +7,11 @@ import { todoistColor } from "../todoist/colors";
 // Todoist priority 4 = p1 (urgent) … 1 = p4 (normal)
 const PRIORITY_CLASS: Record<number, string> = { 4: "p1", 3: "p2", 2: "p3" };
 
-/** Render the inline chip for a `%%td:<markerId>%%` marker. */
-export function renderChip(markerId: string, state: SyncState, doc: Document = document): HTMLElement {
+/**
+ * Render the inline chip for a `%%td:<markerId>%%` marker on a line in the note at `path`. On a
+ * copy of the task (a line outside its home note), the icon is a house, which opens the home note.
+ */
+export function renderChip(markerId: string, state: SyncState, path?: string, doc: Document = document): HTMLElement {
   const chip = doc.createElement("a");
   chip.className = "inline-tasks-chip";
   chip.setAttribute("contenteditable", "false");
@@ -43,6 +46,12 @@ export function renderChip(markerId: string, state: SyncState, doc: Document = d
     add("inline-tasks-status", "deleted in Todoist");
     chip.title = "This task was deleted in Todoist. Remove the marker to unlink it.";
     return chip;
+  }
+
+  if (rec && path && rec.path !== path) {
+    icon.classList.add("is-copy");
+    setIcon(icon, "house");
+    icon.title = `A copy. This task's home is ${rec.path}: click to open it.`;
   }
 
   if (meta) {

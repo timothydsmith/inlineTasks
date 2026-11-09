@@ -40,6 +40,11 @@
 .inline-tasks-chip.is-orphaned { text-decoration: line-through; opacity: 0.7; }
 .inline-tasks-chip.is-orphaned .inline-tasks-icon { background: var(--text-faint); }
 .inline-tasks-chip.is-done .inline-tasks-icon { background: var(--text-faint); }
+/* A copy of the task, outside its home note: a house that opens the home note. */
+.inline-tasks-chip .inline-tasks-icon.is-copy { display: inline-flex; width: auto; height: auto; background: none; color: #e44332; border-radius: 4px; padding: 0 0.1em; }
+.inline-tasks-chip .inline-tasks-icon.is-copy svg { width: 0.95em; height: 0.95em; }
+.inline-tasks-chip .inline-tasks-icon.is-copy:hover { background: var(--background-modifier-active-hover); }
+.inline-tasks-chip.is-done .inline-tasks-icon.is-copy, .inline-tasks-chip.is-orphaned .inline-tasks-icon.is-copy { background: none; color: var(--text-faint); }
 .inline-tasks-backfill-list { max-height: 14em; overflow-y: auto; }
 .inline-tasks-export-tools { display: flex; gap: 0.5em; margin-bottom: 0.5em; }
 .inline-tasks-export-list { max-height: 50vh; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); padding: 0.25em 0.5em; }

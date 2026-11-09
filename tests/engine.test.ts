@@ -1264,6 +1264,95 @@ describe("SyncEngine", () => {
     });
   });
 
+  describe("copies of a task", () => {
+    /** Home.md has the task as T1; Daily.md gets a copy of its line. */
+    const withCopy = async (home = "- [ ] Plant bulbs", copy = "- [ ] Plant bulbs %%td:T1%%") => {
+      vault.files.set("Home.md", home);
+      await engine.pushFile("Home.md");
+      await engine.pull();
+      vault.files.set("Daily.md", copy);
+      await engine.pushFile("Daily.md");
+    };
+
+    it("syncs a copy in another note both ways, keeping the note it came from as home", async () => {
+      await withCopy();
+      expect(state.tasks.T1).toMatchObject({ path: "Home.md", copies: ["Daily.md"] });
+
+      // Edited in the copy: Todoist and the home line follow.
+      vault.files.set("Daily.md", "- [ ] Plant tulips %%td:T1%% ⏳ 2026-11-14");
+      await engine.pushFile("Daily.md");
+      expect(todoist.items.get("T1")).toMatchObject({ content: "Plant tulips", due: { date: "2026-11-14" } });
+      expect(vault.files.get("Home.md")).toBe("- [ ] Plant tulips %%td:T1%% ⏳ 2026-11-14");
+
+      // Changed in Todoist: every copy follows.
+      todoist.edit("T1", { checked: true, due: { date: "2026-11-15" } });
+      await engine.pull();
+      expect(vault.files.get("Home.md")).toBe("- [x] Plant tulips %%td:T1%% ⏳ 2026-11-15");
+      expect(vault.files.get("Daily.md")).toBe("- [x] Plant tulips %%td:T1%% ⏳ 2026-11-15");
+    });
+
+    it("syncs copies within one note", async () => {
+      vault.files.set("Note.md", "- [ ] A\n- [ ] B");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+      vault.files.set("Note.md", "- [ ] A %%td:T1%%\n- [ ] B %%td:T2%%\n- [x] A %%td:T1%%");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.get("T1")!.checked).toBe(true);
+      expect(vault.files.get("Note.md")).toBe("- [x] A %%td:T1%%\n- [ ] B %%td:T2%%\n- [x] A %%td:T1%%");
+      todoist.edit("T1", { content: "A2" });
+      await engine.pull();
+      expect(vault.files.get("Note.md")).toBe("- [x] A2 %%td:T1%%\n- [ ] B %%td:T2%%\n- [x] A2 %%td:T1%%");
+    });
+
+    it("makes a copy the home when the home line goes, and unlinks only when the last line goes", async () => {
+      await withCopy();
+      vault.files.set("Home.md", "");
+      await engine.pushFile("Home.md");
+      expect(state.tasks.T1.path).toBe("Daily.md");
+      expect(state.tasks.T1.copies).toBeUndefined();
+      expect(todoist.items.get("T1")!.checked).toBe(false);
+      vault.files.set("Daily.md", "");
+      await engine.pushFile("Daily.md");
+      expect(state.tasks.T1).toBeUndefined();
+      expect(todoist.items.get("T1")!.checked).toBe(false);
+    });
+
+    it("drops a copy whose line goes, and moves home with a line moved to another note", async () => {
+      await withCopy();
+      vault.files.set("Daily.md", "");
+      await engine.pushFile("Daily.md");
+      expect(state.tasks.T1.copies).toBeUndefined();
+      // Cut from Home.md and pasted into Other.md, which syncs first.
+      vault.files.set("Home.md", "");
+      vault.files.set("Other.md", "- [ ] Plant bulbs %%td:T1%%");
+      await engine.pushFile("Other.md");
+      expect(state.tasks.T1).toMatchObject({ path: "Other.md" });
+      await engine.pushFile("Home.md");
+      expect(state.tasks.T1).toMatchObject({ path: "Other.md" });
+    });
+
+    it("takes the task's nesting from its home note only", async () => {
+      vault.files.set("Home.md", "- [ ] Parent\n\t- [ ] Child");
+      await engine.pushFile("Home.md");
+      await engine.pull();
+      expect(todoist.items.get("T2")!.parent_id).toBe("T1");
+      const from = todoist.calls.length;
+      // A copy at the top level, and one nested under another task: neither moves it.
+      vault.files.set("Daily.md", "- [ ] Child %%td:T2%%\n- [ ] Other\n\t- [ ] Parent %%td:T1%%");
+      await engine.pushFile("Daily.md");
+      expect(todoist.calls.slice(from).flat().filter((c) => c.type === "item_move")).toEqual([]);
+      expect(todoist.items.get("T2")!.parent_id).toBe("T1");
+      expect(todoist.items.get("T1")!.parent_id ?? null).toBe(null);
+    });
+
+    it("links copies found when a device starts without sync state", async () => {
+      vault.files.set("Home.md", "- [ ] A %%td:X1%%");
+      vault.files.set("Daily.md", "- [ ] A %%td:X1%%");
+      expect(await engine.linkExisting()).toBe(1);
+      expect(state.tasks.X1).toMatchObject({ path: "Home.md", copies: ["Daily.md"] });
+    });
+  });
+
   describe("Tasks plugin statuses", () => {
     afterEach(() => setTasksStatuses(null));
 
@@ -1441,13 +1530,18 @@ describe("SyncEngine", () => {
       expect(todoist.completions.get("T1")).toBe(1);
     });
 
-    it("syncs only the first of two open lines with the same marker", async () => {
-      vault.files.set("Note.md", "- [ ] A");
-      await engine.pushFile("Note.md");
+    it("updates the home line when Tasks ticks a repeating task in a copy", async () => {
+      settings.tasksFields = true;
+      vault.files.set("Home.md", "- [ ] Water 🔁 every week ⏳ 2026-11-10");
+      await engine.pushFile("Home.md");
       await engine.pull();
-      vault.files.set("Note.md", "- [ ] A %%td:T1%%\n- [x] A copy %%td:T1%%");
-      await engine.pushFile("Note.md");
-      expect(todoist.items.get("T1")).toMatchObject({ checked: false, content: "A" });
+      vault.files.set("Daily.md", "- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-10");
+      await engine.pushFile("Daily.md");
+      vault.files.set("Daily.md", "- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17\n- [x] Water %%td:T1%% 🔁 every week ⏳ 2026-11-10 ✅ 2026-11-10");
+      await engine.pushFile("Daily.md");
+      expect(todoist.completions.get("T1")).toBe(1);
+      expect(vault.files.get("Daily.md")).toBe("- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17\n- [x] Water 🔁 every week ⏳ 2026-11-10 ✅ 2026-11-10");
+      expect(vault.files.get("Home.md")).toBe("- [ ] Water %%td:T1%% 🔁 every week ⏳ 2026-11-17");
     });
 
     it("imports a Todoist repeat as 🔁", () => {

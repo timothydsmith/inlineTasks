@@ -64,6 +64,17 @@ export interface PushResult {
 }
 
 const BATCH = 90;
+
+/** A task's fields as synced, to write to each of its lines (see SyncEngine.writeLines). */
+interface LineTarget {
+  fields: TaskFields;
+  /** Its title before this sync, which its lines may still have (see withTitle). */
+  title: string;
+  /** When Todoist completed it, for the `✅` date of lines ticked by this sync. */
+  completedAt?: string | null;
+  /** Its lines are from before deadlines synced: a lone `📅` is its date (see readLine). */
+  legacy?: boolean;
+}
 /**
  * How long a `🏁 delete` line must have been gone before its Todoist task is completed, so a line
  * cut from one note and pasted into another is found there first.
@@ -357,7 +368,13 @@ export class SyncEngine {
       for (const path of this.vault.markdownFiles()) {
         if (!this.isFileEligible(path)) continue;
         for (const { task } of findTasks(await this.vault.read(path))) {
-          if (!task.todoistId || this.state.tasks[task.todoistId]) continue;
+          if (!task.todoistId) continue;
+          const known = this.state.tasks[task.todoistId];
+          if (known) {
+            // Another line for a task already linked from another note: a copy.
+            if (known.path !== path && !known.copies?.includes(path)) known.copies = [...(known.copies ?? []), path];
+            continue;
+          }
           // The line's words are its title as synced (see withTitle), not references. Lines not
           // rewritten for deadlines yet still have the Todoist date as `📅` (see readLine).
           const base: TaskFields = { text: task.content, checked: task.checked, due: task.due };
@@ -564,6 +581,11 @@ export class SyncEngine {
 
     const lines = content.split("\n");
     const byLine = new Map(tasks.map((t) => [t.line, t.task]));
+    /** Each synced task's lines in this note: more than one if it's copied within the note. */
+    const linesOf = new Map<string, ParsedTask[]>();
+    for (const { task } of tasks) if (task.todoistId) linesOf.set(task.todoistId, [...(linesOf.get(task.todoistId) ?? []), task]);
+    /** Tasks whose fields this push changed in Todoist: written to their other lines after. */
+    const spread = new Map<string, string>(); // id → title before the push
     const taskLines = new Set(byLine.keys());
     /** Creates sent by this push: pending uuid → project id sent (undefined: the Inbox). */
     const sentCreates = new Map<string, string | undefined>();
@@ -649,11 +671,9 @@ export class SyncEngine {
 
       if (!task.todoistId) continue;
       const id = task.todoistId;
-      // The same marker on another line too (a copied line): the first is the task, as for a pull.
-      if (seenIds.has(id)) {
-        this.log(`${path}: task ${id} is on more than one line; syncing the first`);
-        continue;
-      }
+      // The same task on another line of this note: a copy. The first line carries its references;
+      // every line's fields count (see combinedLocal), and are sent once, with the first.
+      if (seenIds.has(id)) continue;
       seenIds.add(id);
       let rec = this.state.tasks[id];
       let adopted = false;
@@ -663,14 +683,19 @@ export class SyncEngine {
         rec = this.state.tasks[id] = { path, base: { ...local, text: parsed.content } };
         adopted = true;
       }
-      rec.path = path;
+      // In a note other than its home: a copy, or the task moved here if its home no longer has it.
+      if (rec.path !== path) await this.placeLine(rec, id, path);
+      const home = rec.path === path;
       delete rec.gone;
       if (rec.orphaned) continue;
-      if (parsed.fields?.onCompletion === "delete") rec.deleteOnDone = true;
-      else delete rec.deleteOnDone;
+      if (home) {
+        if (parsed.fields?.onCompletion === "delete") rec.deleteOnDone = true;
+        else delete rec.deleteOnDone;
+      }
       // Words of the synced title are title, not references (see withTitle).
       task = this.readLine(parsed, rec);
-      local = this.localFields(task, this.isLegacy(rec));
+      const r0 = rec;
+      local = this.combinedLocal((linesOf.get(id) ?? [parsed]).map((t) => this.readLine(t, r0)), rec);
 
       // `#[Project]` on a synced task: move it, then strip the reference. Not while the line is being edited.
       if (task.projectRef) {
@@ -684,7 +709,7 @@ export class SyncEngine {
             const cmd: Command = { type: "item_move", uuid: makeUuid(), args: { id, project_id: target } };
             commands.push(cmd);
             // Moving to a project makes it a top-level task there, so a nested line moves out of its block.
-            const nested = parentFor(line) !== null;
+            const nested = home && parentFor(line) !== null;
             const r = rec;
             onOk[cmd.uuid] = () => {
               markApplied(id, { project: true });
@@ -764,8 +789,10 @@ export class SyncEngine {
       // Nesting changed in the note since the last sync (indented, outdented or moved): make it a
       // subtask of the task it's now under, or a top-level task. Todoist moves a subtask's own
       // subtasks with it, and those lines moved with it here, so they stay put.
-      const placed = parentFor(line);
-      if (placed === "wait" || (placed && sentCreates.has(placed.id))) {
+      const placed = home ? parentFor(line) : undefined;
+      if (placed === undefined) {
+        // A copy: its home note decides its nesting.
+      } else if (placed === "wait" || (placed && sentCreates.has(placed.id))) {
         if (canCreate) deferred = true; // its new parent is being created; move it once it has an id
       } else {
         const want = placed ? placed.id : null;
@@ -811,7 +838,10 @@ export class SyncEngine {
         const cmd: Command = { type: "item_update_date_complete", uuid: makeUuid(), args: { id, due, is_forward: 1 } };
         commands.push(cmd);
         const done = pickFields(local, { due: null, ...("recurrence" in push ? { recurrence: null } : {}) });
-        onOk[cmd.uuid] = () => (r.base = { ...r.base, ...done });
+        onOk[cmd.uuid] = () => {
+          if (!spread.has(id)) spread.set(id, r.base.text);
+          r.base = { ...r.base, ...done };
+        };
         delete push.due;
         delete push.recurrence;
       }
@@ -819,6 +849,7 @@ export class SyncEngine {
       for (const cmd of commandsFor(id, push, due)) {
         commands.push(cmd);
         onOk[cmd.uuid] = () => {
+          if (!spread.has(id)) spread.set(id, rec!.base.text);
           rec!.base = { ...rec!.base, ...pickFields(local, push) };
           if (cmd.type === "item_update" && push.priority !== undefined && meta) meta.priority = toApiPriority(push.priority);
           // A subtask ticked or unticked here: its parent's count changes now, not at the next pull.
@@ -831,11 +862,16 @@ export class SyncEngine {
 
     // Records for this file whose marker vanished: unlink (never delete in Todoist). A `🏁 delete`
     // line was most likely deleted by Tasks on completion: noted, for a pull to complete it.
+    // A copy's marker gone from this note: just that copy is gone. Its home's: a copy becomes home.
     for (const [id, rec] of Object.entries(this.state.tasks)) {
-      if (rec.path === path && !seenIds.has(id) && !content.includes(`%%td:${id}%%`)) {
-        if (rec.deleteOnDone && !rec.orphaned && !rec.base.checked) rec.gone ??= Date.now();
-        else delete this.state.tasks[id];
+      if (seenIds.has(id) || content.includes(`%%td:${id}%%`)) continue;
+      if (rec.copies?.includes(path)) {
+        this.dropCopy(rec, path);
+        continue;
       }
+      if (rec.path !== path || (await this.promoteCopy(rec, id))) continue;
+      if (rec.deleteOnDone && !rec.orphaned && !rec.base.checked) rec.gone ??= Date.now();
+      else delete this.state.tasks[id];
     }
 
     if (!commands.length) {
@@ -917,6 +953,16 @@ export class SyncEngine {
     await this.stripRefs(path, applied);
     for (const [tmp, realId] of resolved) if (outdentNew.has(tmp)) outdent.add(realId);
     if (outdent.size) await this.moveOut(path, [...outdent]);
+    // What this push changed, written to the task's other lines, here and in other notes.
+    if (spread.size) {
+      const targets = new Map<string, LineTarget>();
+      for (const [id, title] of spread) {
+        const rec = this.state.tasks[id];
+        if (rec) targets.set(id, { fields: rec.base, title });
+      }
+      const paths = [...targets.keys()].flatMap((id) => this.locations(this.state.tasks[id]));
+      await this.writeLines(targets, paths, opts.skipLine === undefined ? undefined : { path, line: opts.skipLine });
+    }
     await this.syncOrder(path);
 
     await this.save();
@@ -1121,6 +1167,7 @@ export class SyncEngine {
       }
       if (found) {
         rec.path = found;
+        this.dropCopy(rec, found);
         delete rec.gone;
       } else {
         commands.push({ type: "item_close", uuid: makeUuid(), args: { id } });
@@ -1197,7 +1244,9 @@ export class SyncEngine {
     // Any unconfirmed project create has now either arrived above or never happened.
     this.state.pendingProjects = {};
 
+    /** Linked tasks that changed, by home note. */
     const byPath = new Map<string, TodoistItem[]>();
+    const changed: TodoistItem[] = [];
     const pendingResolutions = new Map<string, [string, string][]>();
     /** Linked tasks moved to another parent in Todoist, by note. */
     const movedHere = new Map<string, string[]>();
@@ -1236,6 +1285,7 @@ export class SyncEngine {
         childOrder: item.child_order,
       };
       byPath.set(rec.path, [...(byPath.get(rec.path) ?? []), item]);
+      changed.push(item);
     }
 
     // Deleting a project deletes its tasks, but Todoist reports only the project, not each task.
@@ -1251,23 +1301,7 @@ export class SyncEngine {
 
     for (const [path, pairs] of pendingResolutions) await this.resolvePending(path, pairs);
 
-    const commands: Command[] = [];
-    for (const [path, items] of byPath) {
-      const mtime = this.vault.mtime(path);
-      // Merge against the current content first; only write the note if a line actually changes,
-      // so remote-only changes (priority, labels, project) don't rewrite the file and bump its mtime.
-      let result = this.mergeFile(await this.vault.read(path), items, mtime);
-      if (result.changed) {
-        await this.vault.process(path, (content) => {
-          result = this.mergeFile(content, items, mtime);
-          return result.changed ? result.content : content;
-        });
-      }
-      for (const [id, base] of result.bases) this.state.tasks[id].base = base;
-      for (const c of result.conflicts) this.log(c);
-      commands.push(...result.commands);
-    }
-
+    const commands = await this.mergeItems(changed);
     if (commands.length) await this.client.sync({ commands });
     // Tasks moved to another parent in Todoist: move their lines to match.
     for (const [path, ids] of movedHere) await this.followMoves(path, ids);
@@ -1342,13 +1376,17 @@ export class SyncEngine {
 
     // Each synced task's open, synced subtasks in this note, in note order. Only those Todoist
     // agrees are its subtasks: one just indented under it is moved first, then ordered.
+    // Only tasks at home here, on their first line: a copy's nesting is its own (see TaskRecord.path).
+    const firstLine = new Map<string, number>();
+    for (const { line, task } of tasks) if (task.todoistId && !firstLine.has(task.todoistId)) firstLine.set(task.todoistId, line);
+    const atHome = (id: string, line: number) => this.state.tasks[id]?.path === path && firstLine.get(id) === line;
     const groups = new Map<string, string[]>();
     for (const { line, task } of tasks) {
       const id = task.todoistId;
-      if (!live(id) || task.checked || this.state.remote[id]?.checked) continue;
+      if (!live(id) || !atHome(id, line) || task.checked || this.state.remote[id]?.checked) continue;
       const p = parentLine(lines, line, taskLines);
       const parent = p === null ? null : byLine.get(p)?.todoistId;
-      if (!live(parent) || this.state.remote[id]?.parentId !== parent) continue;
+      if (!live(parent) || !atHome(parent, p!) || this.state.remote[id]?.parentId !== parent) continue;
       groups.set(parent, [...(groups.get(parent) ?? []), id]);
     }
     if (!groups.size) return;
@@ -1474,63 +1512,186 @@ export class SyncEngine {
     }
   }
 
-  /** Pure: three-way merge each pulled item against its line in `content`. */
-  private mergeFile(content: string, items: TodoistItem[], mtime: number) {
-    const lines = content.split("\n");
+  /**
+   * Three-way merge each pulled task against its lines, in its home note and every copy, write the
+   * result to each line that differs, and return the commands for what the notes changed. Between
+   * copies changed differently, the most recently edited note wins (see combinedLocal).
+   */
+  private async mergeItems(items: TodoistItem[]): Promise<Command[]> {
     const commands: Command[] = [];
-    const bases = new Map<string, TaskFields>();
-    const conflicts: string[] = [];
-    let changed = false;
+    const targets = new Map<string, LineTarget>();
+    const paths: string[] = [];
+    const contents = new Map<string, string>();
     for (const item of items) {
       const rec = this.state.tasks[item.id];
-      const idx = findLineByMarker(lines, item.id);
-      if (idx < 0) continue; // moved; the index will re-adopt it on the next push
-      const parsed = parseTaskLine(lines[idx]);
-      if (!parsed) continue;
-      const task = this.readLine(parsed, rec);
+      const found: { task: ParsedTask; mtime: number }[] = [];
+      for (const p of this.locations(rec)) {
+        if (!contents.has(p)) contents.set(p, await this.readOrEmpty(p));
+        const content = contents.get(p)!;
+        const mtime = this.vault.mtime(p);
+        for (const { task } of findTasks(content)) if (task.todoistId === item.id) found.push({ task: this.readLine(task, rec), mtime });
+        paths.push(p);
+      }
+      if (!found.length) continue; // moved; the index will re-adopt it on the next push
+      found.sort((a, b) => b.mtime - a.mtime);
       const legacy = this.isLegacy(rec);
-      const local = this.localFields(task, legacy);
+      const local = this.combinedLocal(found.map((f) => f.task), rec);
       const remote = this.remoteFields(item, legacy);
       const remoteAt = item.updated_at ? Date.parse(item.updated_at) : 0;
-      const m = merge(rec.base, local, remote, mtime, remoteAt);
-      if (m.conflicts.length) conflicts.push(`Conflict on "${task.text}" (${m.conflicts.join(", ")}); resolved`);
-      if (!isEmpty(m.pull)) {
-        let fields = task.fields;
-        if (this.tasksFields()) {
-          if (m.pull.priority !== undefined) fields = withLinePriority(fields, m.pull.priority);
-          if (m.pull.checked === true) fields = withDoneDate(fields, isoDate(item.completed_at ? new Date(item.completed_at) : new Date()));
-          if (m.pull.checked === false) fields = withDoneDate(fields, null);
-        }
-        const { recurrence, ...pulled } = m.pull;
-        if (recurrence !== undefined) {
-          fields = { ...fields };
-          if (recurrence) fields.recurrence = recurrence;
-          else delete fields.recurrence;
-        }
-        const next = serializeTask({ ...task, ...pulled, fields });
-        if (next !== lines[idx]) {
-          lines[idx] = next;
-          changed = true;
-          // Rewritten with its date as `⏳`, so its `📅` is the deadline from now on (see readLine).
-          if (legacy) m.merged.deadline = task.deadline ?? null;
-        }
-      }
+      const m = merge(rec.base, local, remote, found[0].mtime, remoteAt);
+      if (m.conflicts.length) this.log(`Conflict on "${found[0].task.text}" (${m.conflicts.join(", ")}); resolved`);
       if (!isEmpty(m.push)) commands.push(...commandsFor(item.id, m.push, this.dueArg(item.id, m.merged)));
-      bases.set(item.id, m.merged);
+      // Lines from before deadlines synced, rewritten by this pull, get the date as `⏳`, so a `📅` is the
+      // deadline from now on (see readLine).
+      if (legacy && !isEmpty(m.pull)) m.merged.deadline = found[0].task.deadline ?? null;
+      targets.set(item.id, { fields: m.merged, title: rec.base.text, completedAt: item.completed_at, legacy });
+      rec.base = m.merged;
     }
-    return { content: lines.join("\n"), changed, commands, bases, conflicts };
+    await this.writeLines(targets, paths);
+    return commands;
+  }
+
+  /**
+   * A task's fields from its lines (more than one when it has copies), as `localFields` gives one
+   * line's: for each field, the first line whose value differs from the last sync, or the first
+   * line's. Lines come most recently edited first, so that one's change wins.
+   */
+  private combinedLocal(tasks: ParsedTask[], rec: TaskRecord): TaskFields {
+    const legacy = this.isLegacy(rec);
+    const all = tasks.map((t) => this.localFields(t, legacy));
+    const out = { ...all[0] };
+    const base = (k: keyof TaskFields) =>
+      k === "priority" ? (rec.base.priority ?? 4) : k === "deadline" || k === "recurrence" ? (rec.base[k] ?? null) : rec.base[k];
+    for (const k of Object.keys(out) as (keyof TaskFields)[]) {
+      const changed = all.find((f) => f[k] !== undefined && f[k] !== base(k));
+      if (changed) (out as Record<string, unknown>)[k] = changed[k];
+    }
+    return out;
+  }
+
+  /** The notes with a line for a task: its home, then its copies. */
+  private locations(rec: TaskRecord | undefined): string[] {
+    return rec ? [rec.path, ...(rec.copies ?? []).filter((p) => p !== rec.path)] : [];
+  }
+
+  private async readOrEmpty(path: string): Promise<string> {
+    try {
+      return (await this.vault.read(path)) ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * A line for a task found in `path`, a note other than its home: a copy if its home still has
+   * the task, otherwise the task moved here, which becomes its home.
+   */
+  private async placeLine(rec: TaskRecord, id: string, path: string): Promise<void> {
+    if ((await this.readOrEmpty(rec.path)).includes(`%%td:${id}%%`)) {
+      if (!rec.copies?.includes(path)) rec.copies = [...(rec.copies ?? []), path];
+    } else {
+      rec.path = path;
+      this.dropCopy(rec, path);
+    }
+  }
+
+  private dropCopy(rec: TaskRecord, path: string): void {
+    rec.copies = rec.copies?.filter((p) => p !== path);
+    if (!rec.copies?.length) delete rec.copies;
+  }
+
+  /** The task's line gone from its home: the first copy still in its note becomes home. False if none is. */
+  private async promoteCopy(rec: TaskRecord, id: string): Promise<boolean> {
+    while (rec.copies?.length) {
+      const next = rec.copies[0];
+      this.dropCopy(rec, next);
+      if ((await this.readOrEmpty(next)).includes(`%%td:${id}%%`)) {
+        rec.path = next;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Write tasks' synced fields to each of their lines in `paths` that differs, leaving the line
+   * being edited (`skip`) alone. A note is only written if a line in it changes.
+   */
+  private async writeLines(targets: Map<string, LineTarget>, paths: Iterable<string>, skip?: { path: string; line: number }): Promise<void> {
+    if (!targets.size) return;
+    for (const p of new Set(paths)) {
+      const rewrite = (content: string): string | null => {
+        const lines = content.split("\n");
+        let changed = false;
+        for (const { line, task } of findTasks(content)) {
+          const target = task.todoistId ? targets.get(task.todoistId) : undefined;
+          if (!target || (skip?.path === p && skip.line === line)) continue;
+          const next = this.syncedLine(task, target);
+          if (next !== null && next !== lines[line]) {
+            lines[line] = next;
+            changed = true;
+          }
+        }
+        return changed ? lines.join("\n") : null;
+      };
+      if (rewrite(await this.readOrEmpty(p)) === null) continue;
+      await this.vault.process(p, (content) => rewrite(content) ?? content);
+    }
+  }
+
+  /** A task's line with its synced fields, or null if it already has them. */
+  private syncedLine(parsed: ParsedTask, target: LineTarget): string | null {
+    const f = target.fields;
+    let t = withTitle(parsed, target.title);
+    if (t === parsed) t = withTitle(parsed, f.text);
+    if (target.legacy && t.deadline && !t.due) t = { ...t, due: t.deadline, deadline: null };
+    let fields = t.fields;
+    let differs = t.text !== f.text || t.checked !== f.checked || t.due !== f.due;
+    if (f.deadline !== undefined && (t.deadline ?? null) !== f.deadline) differs = true;
+    if (this.tasksFields()) {
+      if (f.priority !== undefined && linePriority(t) !== f.priority) {
+        fields = withLinePriority(fields, f.priority);
+        differs = true;
+      }
+      if (f.checked && !t.checked) fields = withDoneDate(fields, isoDate(target.completedAt ? new Date(target.completedAt) : new Date()));
+      if (!f.checked && t.checked) fields = withDoneDate(fields, null);
+      const rule = t.fields?.recurrence;
+      const lineRule = rule ? canonicalRule(rule) : null;
+      if (f.recurrence !== undefined && lineRule !== undefined && lineRule !== f.recurrence) {
+        fields = { ...fields };
+        if (f.recurrence) fields.recurrence = f.recurrence;
+        else delete fields.recurrence;
+        differs = true;
+      }
+    }
+    if (!differs) return null;
+    const next: ParsedTask = { ...t, text: f.text, checked: f.checked, due: f.due, fields };
+    if (f.deadline !== undefined) next.deadline = f.deadline;
+    return serializeTask(next);
   }
 
   // ---------------------------------------------------------------- vault events
 
   onRename(oldPath: string, newPath: string): void {
-    for (const rec of Object.values(this.state.tasks)) if (rec.path === oldPath) rec.path = newPath;
+    for (const rec of Object.values(this.state.tasks)) {
+      if (rec.path === oldPath) rec.path = newPath;
+      if (rec.copies) rec.copies = rec.copies.map((p) => (p === oldPath ? newPath : p));
+    }
     for (const p of Object.values(this.state.pending)) if (p.path === oldPath) p.path = newPath;
     void this.save();
   }
 
   onDelete(path: string): void {
-    for (const [id, rec] of Object.entries(this.state.tasks)) if (rec.path === path) delete this.state.tasks[id];
+    for (const [id, rec] of Object.entries(this.state.tasks)) {
+      if (rec.copies?.includes(path)) this.dropCopy(rec, path);
+      if (rec.path !== path) continue;
+      // Its first copy becomes home; if that note turns out not to have it, its next push says so.
+      const next = rec.copies?.[0];
+      if (next) {
+        rec.path = next;
+        this.dropCopy(rec, next);
+      } else delete this.state.tasks[id];
+    }
     void this.save();
   }
 }

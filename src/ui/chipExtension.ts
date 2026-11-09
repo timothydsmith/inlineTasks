@@ -1,6 +1,6 @@
 import { RangeSetBuilder, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
-import { editorLivePreviewField } from "obsidian";
+import { editorInfoField, editorLivePreviewField } from "obsidian";
 import type { SyncState } from "../sync/state";
 import { renderChip } from "./chip";
 import { chipAction, type ChipActions } from "./chipActions";
@@ -16,14 +16,15 @@ class ChipWidget extends WidgetType {
     private state: () => SyncState,
     private version: number,
     private actions: ChipActions,
+    private path: string | undefined,
   ) {
     super();
   }
   eq(other: ChipWidget): boolean {
-    return other.markerId === this.markerId && other.version === this.version;
+    return other.markerId === this.markerId && other.version === this.version && other.path === this.path;
   }
   toDOM(): HTMLElement {
-    const chip = renderChip(this.markerId, this.state()) as HTMLAnchorElement;
+    const chip = renderChip(this.markerId, this.state(), this.path) as HTMLAnchorElement;
     // CodeMirror would otherwise handle mousedown by moving the cursor into the marker, which
     // removes the chip before the click lands. Swallow it here and open the link ourselves.
     // The raw marker stays reachable with the keyboard or by clicking just beside the chip.
@@ -71,6 +72,7 @@ export function chipExtension(getState: () => SyncState, getVersion: () => numbe
         if (!view.state.field(editorLivePreviewField)) return builder.finish();
         const sel = view.state.selection;
         const version = getVersion();
+        const path = view.state.field(editorInfoField, false)?.file?.path;
         for (const { from, to } of view.visibleRanges) {
           const text = view.state.doc.sliceString(from, to);
           MARKER_RE.lastIndex = 0;
@@ -82,7 +84,7 @@ export function chipExtension(getState: () => SyncState, getVersion: () => numbe
             builder.add(
               start,
               end,
-              Decoration.replace({ widget: new ChipWidget(m[1], getState, version, actions) }),
+              Decoration.replace({ widget: new ChipWidget(m[1], getState, version, actions, path) }),
             );
           }
         }

@@ -10,11 +10,14 @@ export interface ChipActions {
   priority(id: string): void;
   /** The due date: pick another date, or none. */
   due(id: string): void;
+  /** The house icon on a copy's chip: open the task's home note. */
+  home(id: string): void;
 }
 
 /** The action for a click on `target` inside a chip, if it landed on a part that has one. */
 export function chipAction(target: EventTarget | null, actions: ChipActions): ((id: string) => void) | undefined {
   const el = target as HTMLElement | null;
+  if (el?.closest(".inline-tasks-icon.is-copy")) return (id) => actions.home(id);
   if (el?.closest(".inline-tasks-subtasks")) return (id) => actions.subtasks(id);
   if (el?.closest(".inline-tasks-project")) return (id) => actions.project(id);
   if (el?.closest(".inline-tasks-label")) return (id) => actions.labels(id);

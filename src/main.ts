@@ -102,7 +102,7 @@ export default class InlineTasksPlugin extends Plugin {
     );
 
     this.addSettingTab(new InlineTasksSettingTab(this.app, this));
-    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id), due: (id: string) => this.changeDue(id) };
+    const chipActions = { subtasks: (id: string) => void this.insertMissingSubtasks(id), project: (id: string) => this.changeProject(id), labels: (id: string) => this.changeLabels(id), priority: (id: string) => this.changePriority(id), due: (id: string) => this.changeDue(id), home: (id: string) => void this.openHome(id) };
     this.registerEditorExtension(chipExtension(() => this.state, () => this.chipVersion, chipActions));
     this.registerEditorExtension(
       localEditTracker(
@@ -418,6 +418,18 @@ export default class InlineTasksPlugin extends Plugin {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const config = (this.app.vault as any).getConfig?.bind(this.app.vault) as ((k: string) => unknown) | undefined;
     return config?.("useTab") === false ? " ".repeat(Number(config("tabSize")) || 4) : "\t";
+  }
+
+  /** Open a task's home note at its line, from the house icon on the chip of a copy. */
+  private async openHome(id: string): Promise<void> {
+    const rec = this.state.tasks[id];
+    const file = rec && this.app.vault.getAbstractFileByPath(rec.path);
+    if (!(file instanceof TFile)) {
+      new Notice("Todoist: can't find this task's home note");
+      return;
+    }
+    const line = Math.max(0, findLineByMarker((await this.app.vault.cachedRead(file)).split("\n"), id));
+    await this.app.workspace.getLeaf(false).openFile(file, { eState: { line } });
   }
 
   /**

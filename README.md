@@ -221,6 +221,25 @@ A repeating task is one task in Todoist, whichever side it repeats from:
 - **Rules both understand** are synced: `every day`, `every 3 days`, `every weekday`, `every week`, `every 2 weeks`, `every week on Monday, Friday`, `every month`, `every month on the 15th`, `every month on the last`, `every year`, and any of these `when done` (Todoist's `every!`). Others, such as `every 3rd friday`, stay where they were written: the line or Todoist. A start or end date and a time in Todoist's repeat aren't written to the line.
 - **Changing the date** on the line moves the next occurrence and keeps the repeat.
 
+### The same task in several notes
+
+Copy a synced line, marker and all, into another note (or elsewhere in the same note), and both lines are the same Todoist task:
+
+```markdown
+<!-- Projects/Garden.md, its home -->
+- [ ] Plant bulbs %%td:6Xg4Qm2pR%% ⏳ 2026-11-14
+
+<!-- Daily/2026-11-09.md, a copy -->
+- [ ] Plant bulbs %%td:6Xg4Qm2pR%% ⏳ 2026-11-14
+```
+
+- **Every line stays in step:** edit the text, tick it, or change its date, deadline, priority or repeat on any line, and Todoist and the other lines follow. A change made in Todoist reaches every line.
+- **Its home note** is where it was created, imported or first linked. The home line decides its nesting: indenting or moving a copy doesn't move the task in Todoist, a copy's subtasks aren't kept in order, and moves made in Todoist only move the home line. New subtasks typed under a copy are still created as its subtasks.
+- **The chip on a copy** shows a house instead of the red square. Click the house to open the home note at the task's line.
+- **References** typed on a copy, such as `#[Project]` or `@label`, work on the first line of the task in each note.
+- **Deleting a line** only unlinks that line. Deleting the home line makes another copy the home; the task is unlinked once its last line is gone. Moving the home line to another note moves its home there.
+- **Changed on two lines at once,** before either synced: for each field, the note edited most recently wins.
+
 ### Subtasks
 
 A new checkbox nested under another checkbox is created as its subtask in Todoist:
@@ -378,7 +397,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Subtasks:** a subtask added in Todoist to a task in a note appears only when you add it (see [Subtasks](#subtasks)). A task moved in Todoist under a task in another note, or in no note, keeps its place; lines aren't moved between notes.
 - **Order:** only subtasks are kept in order. The order of top-level tasks in a note isn't synced, since one note can hold tasks from several projects. The first time a task's subtasks are seen after updating, their order is just recorded: if the note and Todoist disagree then, they're left until one side is reordered. Lines synced before this version are taken as they're nested the first time each note syncs.
 - **Tasks plugin:** dates other than `⏳` and `📅` stay in the note. Priorities sync only with **Write Tasks plugin fields** on, and 🔽 and ⏬ both count as p4.
-- **The same marker on two lines** (a copied line): the first line is the task, and the other is left alone. A repeating task ticked with Tasks is the exception (see [Repeating tasks](#repeating-tasks)).
+- **Copies of a task:** only the home line decides its nesting and subtask order (see [The same task in several notes](#the-same-task-in-several-notes)). Completing a `🏁 delete` task in a copy, which deletes that line, doesn't complete it while other lines remain; tick it instead. A copy pasted from an old version of the line counts as an edit, so its older values are sent to Todoist.
 - **Not yet supported:** Todoist query blocks.
 
 ## Development
