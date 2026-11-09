@@ -27,6 +27,8 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 - Only `[x]`, `[X]` and `[-]` (cancelled) complete the Todoist task. Other statuses, such as Tasks' `[/]` (in progress), leave it open and are kept on the line. New tasks are made from `[ ]` and `[/]` lines only.
 
 ### Fixed
+- Custom statuses set up in the Tasks plugin are read as Tasks reads them: a custom done or cancelled status completes the Todoist task (cancelled without a `✅` date), a custom to-do or in-progress status starts one, and a non-task status does neither.
+- Completing a task with `🏁 delete` in the Tasks plugin, which deletes its line, left the Todoist task open. Now it's completed at the next sync, unless the line turns up in another note.
 - Ticking a repeating task with the Tasks plugin, which adds a line for the next occurrence with the same marker, completed the Todoist task and then reopened it. Now it completes that occurrence in Todoist and moves the task to the new line's date; the ticked line loses its marker and stays as a record.
 - Changing the date on the line of a task that repeats in Todoist ended the repeat. It now moves the next occurrence.
 - A line copied with its marker no longer fights the original: the first line with a marker is the task.

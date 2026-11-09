@@ -1,7 +1,7 @@
 import { generateKeyBetween } from "fractional-indexing";
-import { beforeEach, describe, expect, it } from "vitest";
-import { SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
-import { blockEnd, withProjectRef, withRef } from "../src/parse/taskLine";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { GONE_GRACE_MS, SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
+import { blockEnd, setTasksStatuses, withProjectRef, withRef } from "../src/parse/taskLine";
 import { importLines, withMissingSubtasks } from "../src/sync/importTask";
 import { isoDate } from "../src/sync/dates";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
@@ -1261,6 +1261,76 @@ describe("SyncEngine", () => {
       await engine.pull();
       expect(vault.files.get("Note.md")).toBe("- [ ] Report %%td:T1%% ⏳ 2026-11-12");
       expect(state.remote.T1.deadline).toBe(null);
+    });
+  });
+
+  describe("Tasks plugin statuses", () => {
+    afterEach(() => setTasksStatuses(null));
+
+    it("completes the Todoist task for Tasks' custom done and cancelled statuses", async () => {
+      setTasksStatuses([
+        { symbol: "d", type: "DONE" },
+        { symbol: "c", type: "CANCELLED" },
+        { symbol: "~", type: "NON_TASK" },
+        { symbol: "!", type: "TODO" },
+      ]);
+      settings.tasksFields = true;
+      vault.files.set("Note.md", "- [ ] A\n- [ ] B\n- [ ] C\n- [!] D\n- [~] Not a task");
+      await engine.pushFile("Note.md");
+      expect(todoist.items.size).toBe(4); // NON_TASK isn't sent
+      await engine.pull();
+      vault.files.set("Note.md", "- [d] A %%td:T1%%\n- [c] B %%td:T2%%\n- [~] C %%td:T3%%\n- [!] D %%td:T4%%\n- [~] Not a task");
+      await engine.pushFile("Note.md");
+      expect(["T1", "T2", "T3", "T4"].map((id) => todoist.items.get(id)!.checked)).toEqual([true, true, false, false]);
+      // Done gets a done date; cancelled doesn't.
+      expect(vault.files.get("Note.md")).toBe(
+        `- [d] A %%td:T1%% ✅ ${isoDate(new Date())}\n- [c] B %%td:T2%%\n- [~] C %%td:T3%%\n- [!] D %%td:T4%%\n- [~] Not a task`,
+      );
+    });
+  });
+
+  describe("🏁 delete", () => {
+    const expire = (id: string) => (state.tasks[id].gone = Date.now() - GONE_GRACE_MS);
+
+    beforeEach(async () => {
+      vault.files.set("Note.md", "- [ ] Once 🏁 delete\n- [ ] Plain");
+      await engine.pushFile("Note.md");
+      await engine.pull();
+    });
+
+    it("completes the Todoist task once Tasks has deleted its line", async () => {
+      vault.files.set("Note.md", "- [ ] Plain %%td:T2%%");
+      await engine.pushFile("Note.md");
+      expect(state.tasks.T1.gone).toBeDefined();
+      await engine.pull(); // not yet: it may turn up in another note
+      expect(todoist.items.get("T1")!.checked).toBe(false);
+      expire("T1");
+      await engine.pull();
+      expect(todoist.items.get("T1")!.checked).toBe(true);
+      expect(state.tasks.T1).toBeUndefined();
+    });
+
+    it("leaves a line moved to another note linked there", async () => {
+      vault.files.set("Note.md", "- [ ] Plain %%td:T2%%");
+      await engine.pushFile("Note.md");
+      vault.files.set("Other.md", "- [ ] Once %%td:T1%% 🏁 delete");
+      expire("T1");
+      await engine.pull();
+      expect(todoist.items.get("T1")!.checked).toBe(false);
+      expect(state.tasks.T1).toMatchObject({ path: "Other.md" });
+      expect(state.tasks.T1.gone).toBeUndefined();
+    });
+
+    it("comes back linked if the line is restored, and a line without 🏁 delete is just unlinked", async () => {
+      vault.files.set("Note.md", "");
+      await engine.pushFile("Note.md");
+      expect(state.tasks.T2).toBeUndefined();
+      vault.files.set("Note.md", "- [ ] Once %%td:T1%% 🏁 delete");
+      await engine.pushFile("Note.md");
+      expect(state.tasks.T1.gone).toBeUndefined();
+      await engine.pull();
+      expect(todoist.items.get("T1")!.checked).toBe(false);
+      expect(todoist.items.get("T2")!.checked).toBe(false);
     });
   });
 

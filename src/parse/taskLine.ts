@@ -120,10 +120,43 @@ const FIELDS = [
   dateField("done", "✅", "✅"),
 ];
 const BLOCK_LINK_RE = /(?:^|\s)\^([A-Za-z0-9-]+)$/;
+/**
+ * Checkbox statuses by what they mean for Todoist, as the Tasks plugin's defaults have them (with
+ * Obsidian's `[X]` as done). setTasksStatuses changes them to match the user's Tasks settings.
+ */
+const DEFAULT_STATUSES = { closed: "xX-", cancelled: "-", open: " /" };
 /** Statuses that complete the Todoist task: done and cancelled. */
-const CLOSED_STATUSES = "xX-";
-/** Statuses an unsynced line can start a Todoist task from: to do, and Tasks' in progress. */
-const OPEN_STATUSES = " /";
+let closedStatuses = new Set(DEFAULT_STATUSES.closed);
+/** Closed statuses that are cancelled rather than done, so get no done date. */
+let cancelledStatuses = new Set(DEFAULT_STATUSES.cancelled);
+/** Statuses an unsynced line can start a Todoist task from: to do, and in progress. */
+let openStatuses = new Set(DEFAULT_STATUSES.open);
+
+/** A status as the Tasks plugin's settings define it. */
+export interface TasksStatus {
+  symbol: string;
+  /** TODO, IN_PROGRESS, DONE, CANCELLED or NON_TASK. */
+  type: string;
+}
+
+/**
+ * Use the Tasks plugin's statuses: DONE and CANCELLED ones complete the Todoist task, TODO and
+ * IN_PROGRESS ones are open and start new tasks, and NON_TASK ones do neither: a synced line keeps
+ * its Todoist task open, and an unsynced one isn't sent. Symbols Tasks doesn't define keep their
+ * default meaning. Null (no Tasks plugin) restores the defaults.
+ */
+export function setTasksStatuses(statuses: TasksStatus[] | null): void {
+  closedStatuses = new Set(DEFAULT_STATUSES.closed);
+  cancelledStatuses = new Set(DEFAULT_STATUSES.cancelled);
+  openStatuses = new Set(DEFAULT_STATUSES.open);
+  for (const { symbol, type } of statuses ?? []) {
+    if (typeof symbol !== "string" || symbol.length !== 1) continue;
+    for (const set of [closedStatuses, cancelledStatuses, openStatuses]) set.delete(symbol);
+    if (type === "DONE" || type === "CANCELLED") closedStatuses.add(symbol);
+    if (type === "CANCELLED") cancelledStatuses.add(symbol);
+    if (type === "TODO" || type === "IN_PROGRESS") openStatuses.add(symbol);
+  }
+}
 
 /** Tasks priorities for Todoist's p1–p3. p4 is Tasks' normal priority, written as nothing. */
 const PRIORITY_EMOJI: Record<number, string> = { 1: "🔺", 2: "⏫", 3: "🔼" };
@@ -156,12 +189,17 @@ export function withDoneDate(fields: TasksFields | undefined, date: string | nul
 
 /** Whether a checkbox status completes the Todoist task. */
 export function isClosedStatus(status: string): boolean {
-  return status.length === 1 && CLOSED_STATUSES.includes(status);
+  return closedStatuses.has(status);
+}
+
+/** Whether a checkbox status is a cancelled one: it completes the Todoist task, but without a done date. */
+export function isCancelledStatus(status: string): boolean {
+  return cancelledStatuses.has(status);
 }
 
 /** Whether an unsynced line with this status, and not opted out, becomes a Todoist task. */
 export function createsTask(task: Pick<ParsedTask, "status" | "excluded" | "todoistId" | "pendingUuid">): boolean {
-  return !task.excluded && !task.todoistId && !task.pendingUuid && task.status.length === 1 && OPEN_STATUSES.includes(task.status);
+  return !task.excluded && !task.todoistId && !task.pendingUuid && openStatuses.has(task.status);
 }
 
 const CHECKBOX_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)\[(.)\]\s?(.*)$/;

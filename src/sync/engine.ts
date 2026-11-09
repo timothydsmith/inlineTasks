@@ -2,6 +2,7 @@ import {
   createsTask,
   findLineByMarker,
   findTasks,
+  isCancelledStatus,
   linePriority,
   needsRelayout,
   parentLine,
@@ -63,6 +64,11 @@ export interface PushResult {
 }
 
 const BATCH = 90;
+/**
+ * How long a `🏁 delete` line must have been gone before its Todoist task is completed, so a line
+ * cut from one note and pasted into another is found there first.
+ */
+export const GONE_GRACE_MS = 30_000;
 
 export class SyncEngine {
   private busy: Promise<unknown> = Promise.resolve();
@@ -329,7 +335,7 @@ export class SyncEngine {
         next = { ...next, priorityRef: null, fields: withLinePriority(next.fields, t.priorityRef) };
       }
       if (rec && !rec.orphaned) {
-        if (t.checked && t.status !== "-" && !t.fields?.done && !rec.base.checked) {
+        if (t.checked && !isCancelledStatus(t.status) && !t.fields?.done && !rec.base.checked) {
           next = { ...next, fields: withDoneDate(next.fields, isoDate(new Date())) };
         } else if (!t.checked && t.fields?.done) {
           next = { ...next, fields: withDoneDate(next.fields, null) };
@@ -357,7 +363,7 @@ export class SyncEngine {
           const base: TaskFields = { text: task.content, checked: task.checked, due: task.due };
           if (!this.state.datesMigrated) base.due = task.due ?? task.deadline ?? null;
           else base.deadline = task.deadline ?? null;
-          this.state.tasks[task.todoistId] = { path, base };
+          this.state.tasks[task.todoistId] = { path, base, ...(task.fields?.onCompletion === "delete" ? { deleteOnDone: true } : {}) };
           n++;
         }
       }
@@ -658,7 +664,10 @@ export class SyncEngine {
         adopted = true;
       }
       rec.path = path;
+      delete rec.gone;
       if (rec.orphaned) continue;
+      if (parsed.fields?.onCompletion === "delete") rec.deleteOnDone = true;
+      else delete rec.deleteOnDone;
       // Words of the synced title are title, not references (see withTitle).
       task = this.readLine(parsed, rec);
       local = this.localFields(task, this.isLegacy(rec));
@@ -820,10 +829,12 @@ export class SyncEngine {
       }
     }
 
-    // Records for this file whose marker vanished: unlink (never delete in Todoist).
+    // Records for this file whose marker vanished: unlink (never delete in Todoist). A `🏁 delete`
+    // line was most likely deleted by Tasks on completion: noted, for a pull to complete it.
     for (const [id, rec] of Object.entries(this.state.tasks)) {
-      if (rec.path === path && !seenIds.has(id)) {
-        if (!content.includes(`%%td:${id}%%`)) delete this.state.tasks[id];
+      if (rec.path === path && !seenIds.has(id) && !content.includes(`%%td:${id}%%`)) {
+        if (rec.deleteOnDone && !rec.orphaned && !rec.base.checked) rec.gone ??= Date.now();
+        else delete this.state.tasks[id];
       }
     }
 
@@ -985,6 +996,7 @@ export class SyncEngine {
         const created = { ...task, pendingUuid: null, todoistId: realId, projectRef: null, labelRefs: [], priorityRef: null, dueRef: null, fields };
         lines[idx] = serializeTask(created);
         this.state.tasks[realId] = { path, base: this.localFields(created) };
+        if (fields?.onCompletion === "delete") this.state.tasks[realId].deleteOnDone = true;
       }
       return lines.join("\n");
     });
@@ -1089,7 +1101,45 @@ export class SyncEngine {
       .map(([id]) => id);
   }
 
+  /**
+   * Complete the Todoist tasks of `🏁 delete` lines gone for a while (see TaskRecord.gone): Tasks
+   * deletes such a line when it's completed. One found in another note was moved, not deleted,
+   * and is left linked there.
+   */
+  private async completeDeleted(): Promise<void> {
+    const gone = Object.entries(this.state.tasks).filter(([, r]) => r.gone && Date.now() - r.gone >= GONE_GRACE_MS);
+    if (!gone.length) return;
+    const files = this.vault.markdownFiles();
+    const commands: Command[] = [];
+    for (const [id, rec] of gone) {
+      let found: string | undefined;
+      for (const f of files) {
+        if ((await this.vault.read(f)).includes(`%%td:${id}%%`)) {
+          found = f;
+          break;
+        }
+      }
+      if (found) {
+        rec.path = found;
+        delete rec.gone;
+      } else {
+        commands.push({ type: "item_close", uuid: makeUuid(), args: { id } });
+      }
+    }
+    if (commands.length) {
+      const res = await this.client.sync({ commands });
+      for (const cmd of commands) {
+        const id = cmd.args.id as string;
+        if (res.sync_status?.[cmd.uuid] !== "ok") continue; // tried again at the next pull
+        delete this.state.tasks[id];
+        this.log(`completed ${id}: its 🏁 delete line was removed`);
+      }
+    }
+    await this.save();
+  }
+
   private async pullInner(): Promise<void> {
+    await this.completeDeleted();
     // Projects saved before archived/parent/order were tracked need one full sync to fill them in, and
     // so do tasks we have no details for, since an incremental sync only returns tasks that changed.
     const stale =

@@ -3,7 +3,7 @@ import { Editor, editorInfoField, MarkdownView, normalizePath, Notice, Platform,
 import { DEFAULT_SETTINGS, InlineTasksSettingTab, type InlineTasksSettings } from "./settings";
 import { CATALOG_FILE, catalogNote } from "./sync/catalog";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
-import { blockEnd, findLineByMarker, parseTaskLine, withPickedLabels, withRef } from "./parse/taskLine";
+import { blockEnd, findLineByMarker, parseTaskLine, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
 import { importLines, withMissingSubtasks } from "./sync/importTask";
 import { OriginTracker } from "./sync/origin";
 import { projectRef } from "./sync/projects";
@@ -21,6 +21,9 @@ import { LabelModal, type LabelPick } from "./ui/labelModal";
 import { labelTrigger } from "./ui/labelTrigger";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { readingChipProcessor } from "./ui/readingChip";
+
+/** The Tasks plugin's id, for reading its statuses. */
+const TASKS_PLUGIN_ID = "obsidian-tasks-plugin";
 
 /** `data.json`, which Obsidian Sync shares between devices. Sync state is kept per device instead. */
 interface PluginData {
@@ -192,6 +195,26 @@ export default class InlineTasksPlugin extends Plugin {
         this.maybePromptBackfill();
       }
     });
+  }
+
+  /**
+   * Use the Tasks plugin's statuses, so a custom done or cancelled status completes the Todoist
+   * task (see setTasksStatuses). Read from its saved settings each sync, since it has no API for
+   * them and they can change at any time.
+   */
+  private async loadTasksStatuses(): Promise<void> {
+    const tasks = (this.app as unknown as { plugins?: { plugins?: Record<string, Plugin> } }).plugins?.plugins?.[TASKS_PLUGIN_ID];
+    if (!tasks) {
+      setTasksStatuses(null);
+      return;
+    }
+    try {
+      const data = (await tasks.loadData()) as { statusSettings?: { coreStatuses?: TasksStatus[]; customStatuses?: TasksStatus[] } } | null;
+      const s = data?.statusSettings;
+      setTasksStatuses(s ? [...(s.coreStatuses ?? []), ...(s.customStatuses ?? [])] : null);
+    } catch (e) {
+      this.log(`couldn't read the Tasks plugin's statuses: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   onunload(): void {
@@ -579,6 +602,7 @@ export default class InlineTasksPlugin extends Plugin {
 
   private async flush(force = false): Promise<void> {
     if (!this.settings.apiToken) return;
+    await this.loadTasksStatuses();
     const paths = [...this.dirty];
     this.dirty.clear();
     for (const path of paths) {
@@ -608,6 +632,7 @@ export default class InlineTasksPlugin extends Plugin {
 
   async runPull(notify = false): Promise<void> {
     if (!this.settings.apiToken) return;
+    await this.loadTasksStatuses();
     await this.guard(() => this.engine.pull(), notify);
     this.refresh();
     await this.writeCatalog();

@@ -18,6 +18,13 @@ export interface TaskRecord {
   kidsNote?: string[];
   kidsTodoist?: string[];
   orphaned?: boolean;
+  /** Its line has `🏁 delete`: Tasks deletes the line when the task is completed. */
+  deleteOnDone?: boolean;
+  /**
+   * When a `🏁 delete` line's marker vanished from its note (ms). Unless it turns up in another
+   * note, a pull then completes the Todoist task (see SyncEngine.completeDeleted).
+   */
+  gone?: number;
 }
 
 /** Remote-only metadata shown on the chip. */

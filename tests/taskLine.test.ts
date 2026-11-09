@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createsTask, findTasks, needsRelayout, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
+import { afterEach, describe, expect, it } from "vitest";
+import { createsTask, findTasks, isCancelledStatus, setTasksStatuses, needsRelayout, parentLine, parseTaskLine, serializeTask, startsLabel, withPickedLabels, withProjectRef, withTitle } from "../src/parse/taskLine";
 
 describe("parseTaskLine", () => {
   it("parses a plain checkbox", () => {
@@ -295,5 +295,32 @@ describe("Tasks plugin fields", () => {
     expect(createsTask(parseTaskLine("- [x] a")!)).toBe(false);
     expect(createsTask(parseTaskLine("- [-] a")!)).toBe(false);
     expect(createsTask(parseTaskLine("- [ ] a %%td:x%%")!)).toBe(false);
+  });
+});
+
+describe("Tasks plugin statuses", () => {
+  afterEach(() => setTasksStatuses(null));
+  const line = (s: string) => parseTaskLine(`- [${s}] Thing`)!;
+
+  it("reads statuses as Tasks defines them", () => {
+    setTasksStatuses([
+      { symbol: "d", type: "DONE" },
+      { symbol: "c", type: "CANCELLED" },
+      { symbol: "~", type: "NON_TASK" },
+      { symbol: "/", type: "NON_TASK" },
+    ]);
+    expect(["d", "c", "~", "/", "x", "X", "-", " "].map((s) => line(s).checked)).toEqual([true, true, false, false, true, true, true, false]);
+    expect(["c", "-", "d"].map(isCancelledStatus)).toEqual([true, true, false]);
+    expect(["~", "/", " ", "d"].map((s) => createsTask(line(s)))).toEqual([false, false, true, false]);
+    // A custom done line Todoist reopens becomes `[ ]`.
+    expect(serializeTask({ ...line("d"), checked: false })).toBe("- [ ] Thing");
+  });
+
+  it("goes back to the defaults without Tasks", () => {
+    setTasksStatuses([{ symbol: "d", type: "DONE" }]);
+    setTasksStatuses(null);
+    expect(line("d").checked).toBe(false);
+    expect(createsTask(line("d"))).toBe(false);
+    expect(createsTask(line("/"))).toBe(true);
   });
 });
