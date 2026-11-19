@@ -24,7 +24,7 @@ import { LabelModal, type LabelPick } from "./ui/labelModal";
 import { labelTrigger } from "./ui/labelTrigger";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { QueryChips, type TasksCacheTask } from "./ui/queryChips";
-import { copyChecker, type TasksQueryTask } from "./ui/queryFilter";
+import { copyChecker, todoistFunctions, type TasksQueryTask } from "./ui/queryFilter";
 import { clickableChip, readingChipProcessor } from "./ui/readingChip";
 
 /** The Tasks plugin's id, for reading its statuses. */
@@ -126,7 +126,8 @@ export default class InlineTasksPlugin extends Plugin {
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, chipActions));
     // For Tasks queries: `filter by function !inlineTasks.isCopy(task)` lists each task once, at its home.
     const isCopy = copyChecker(() => this.state, () => this.tasksPlugin<{ getTasks?: () => TasksQueryTask[] }>()?.getTasks?.() ?? null);
-    (window as unknown as { inlineTasks?: unknown }).inlineTasks = { isCopy };
+    // And the task's Todoist labels and project, which aren't on the line: `inlineTasks.hasLabel(task, "PhoneCall")`.
+    (window as unknown as { inlineTasks?: unknown }).inlineTasks = { isCopy, ...todoistFunctions(() => this.state) };
     this.register(() => delete (window as unknown as { inlineTasks?: unknown }).inlineTasks);
     this.app.workspace.onLayoutReady(() => {
       this.queryChips = new QueryChips(

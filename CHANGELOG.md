@@ -7,6 +7,9 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+### Added
+- Tasks queries can filter and group by a task's Todoist labels and project, which aren't on its line: `filter by function inlineTasks.hasLabel(task, "PhoneCall")`, `inlineTasks.inProject(task, "Work")`, and `group by function inlineTasks.labels(task)` or `inlineTasks.project(task)`.
+
 ## [0.4.1] - 2026-11-09
 
 ### Fixed
