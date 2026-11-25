@@ -87,6 +87,19 @@ export function withMissingSubtasks(
 }
 
 /**
+ * A copy of a task's line from another note (see "The same task in several notes"), at `indent`
+ * as a list item: its text and fields as they stand, marker and all, so it's the same task. Its
+ * `^block` link is left off, since two lines can't share one, and a date its note's name gives
+ * it (see parseTaskLine) is written as `⏳`, since this note may not give the same. Null if the
+ * line isn't a task.
+ */
+export function copyLine(homeLine: string, indent: string, homeFileDate?: string | null): string | null {
+  const task = parseTaskLine(homeLine, homeFileDate ?? undefined);
+  if (!task?.todoistId) return null;
+  return serializeTask({ ...task, prefix: `${indent}- `, blockLink: null, inferredDue: undefined });
+}
+
+/**
  * A Todoist task's priority and repeat as Tasks fields, and when it was added as `➕` if Tasks adds
  * created dates. A repeat Tasks wouldn't understand is left out.
  */

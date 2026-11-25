@@ -1,21 +1,24 @@
-import { App, prepareFuzzySearch, SuggestModal } from "obsidian";
+import { App, prepareFuzzySearch, setIcon, SuggestModal } from "obsidian";
 import type { SyncState } from "../sync/state";
 import { dueDate, type TodoistItem } from "../todoist/client";
+import { rankMatches, type Searchable } from "./importSearch";
 
-interface Candidate {
+interface Candidate extends Searchable {
   item: TodoistItem;
   /** Project, with parent projects, e.g. "Work / Clients". */
   project: string;
-  due: string | null;
   subtasks: number;
-  /** What the search matches against. */
-  haystack: string;
-  score: number;
+  /** The note it's already linked in, its home, or null if it's in no note yet. */
+  home: string | null;
 }
 
+/** How many tasks the list shows; more are reached by typing. */
+const LIMIT = 100;
+
 /**
- * Pick an open Todoist task to insert at the cursor. Searches the task's title, project and due
- * date; with nothing typed, lists tasks by due date, soonest first.
+ * Pick an open Todoist task to insert at the cursor. Searches the task's title, project, labels and
+ * due date, by words in any order (see rankMatches); with nothing typed, lists tasks by due date,
+ * soonest first. A task already linked in a note shows which, and is inserted as a copy of it.
  */
 export class ImportModal extends SuggestModal<Candidate> {
   private candidates: Candidate[];
@@ -24,54 +27,54 @@ export class ImportModal extends SuggestModal<Candidate> {
     app: App,
     state: SyncState,
     items: TodoistItem[],
-    isLinked: (id: string) => boolean,
-    private onChoose: (item: TodoistItem) => void,
+    homeOf: (id: string) => string | null,
+    private onChoose: (item: TodoistItem, home: string | null) => void,
   ) {
     super(app);
-    this.limit = 100;
-    this.setPlaceholder("Import a Todoist task…");
-    this.setInstructions([
-      { command: "↑↓", purpose: "choose" },
-      { command: "↵", purpose: "insert with its subtasks" },
-      { command: "esc", purpose: "dismiss" },
-    ]);
+    this.limit = LIMIT;
     const kids = new Map<string, number>();
     for (const i of items) if (i.parent_id) kids.set(i.parent_id, (kids.get(i.parent_id) ?? 0) + 1);
-    this.candidates = items
-      .filter((i) => !isLinked(i.id))
-      .map((item) => {
-        const project = projectPath(state, item.project_id);
-        const due = dueDate(item.due);
-        return { item, project, due, subtasks: kids.get(item.id) ?? 0, haystack: `${item.content} ${project} ${due ?? ""}`, score: 0 };
-      });
-    this.emptyStateText = this.candidates.length ? "No matching task" : "No open Todoist tasks that aren't already in a note";
+    this.candidates = items.map((item) => {
+      const project = projectPath(state, item.project_id);
+      const due = dueDate(item.due);
+      const labels = (item.labels ?? []).map((l) => `@${l}`).join(" ");
+      return { item, project, due, subtasks: kids.get(item.id) ?? 0, home: homeOf(item.id), title: item.content, rest: `${project} ${labels} ${due ?? ""}` };
+    });
+    const n = this.candidates.length;
+    this.setPlaceholder(n > LIMIT ? `Search ${n} Todoist tasks by title, project or label…` : "Import a Todoist task…");
+    this.setInstructions([
+      { command: "↑↓", purpose: "choose" },
+      { command: "↵", purpose: "insert it, or a copy if it's in a note already" },
+      { command: "esc", purpose: "dismiss" },
+    ]);
+    this.emptyStateText = n ? "No matching task" : "No open Todoist tasks";
   }
 
   getSuggestions(query: string): Candidate[] {
     const q = query.trim();
-    if (!q) {
-      return [...this.candidates].sort(
-        (a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.item.content.localeCompare(b.item.content),
-      );
-    }
-    const search = prepareFuzzySearch(q);
-    const out: Candidate[] = [];
-    for (const c of this.candidates) {
-      const m = search(c.haystack);
-      if (m) out.push({ ...c, score: m.score });
-    }
-    return out.sort((a, b) => b.score - a.score);
+    const fuzzy = q ? prepareFuzzySearch(q) : null;
+    return rankMatches(this.candidates, q, fuzzy ? (text) => fuzzy(text)?.score ?? null : undefined);
   }
 
   renderSuggestion(c: Candidate, el: HTMLElement): void {
     el.addClass("inline-tasks-suggest");
     el.createDiv({ text: c.item.content });
-    const details = [c.project, c.due ? `📅 ${c.due}` : "", c.subtasks ? `${c.subtasks} subtask${c.subtasks > 1 ? "s" : ""}` : ""];
-    el.createDiv({ text: details.filter(Boolean).join(" · "), cls: "inline-tasks-suggest-path" });
+    const labels = (c.item.labels ?? []).map((l) => `@${l}`).join(" ");
+    // A copy brings only the task's line, so its subtask count isn't shown.
+    const subtasks = !c.home && c.subtasks ? `${c.subtasks} subtask${c.subtasks > 1 ? "s" : ""}` : "";
+    const details = [c.project, labels, c.due ? `⏳ ${c.due}` : "", subtasks];
+    const row = el.createDiv({ cls: "inline-tasks-suggest-path" });
+    if (c.home) {
+      const where = row.createSpan({ cls: "inline-tasks-suggest-home" });
+      setIcon(where.createSpan(), "home");
+      where.createSpan({ text: ` In ${c.home.replace(/\.md$/, "")}: inserts a copy` });
+      if (details.some(Boolean)) row.createSpan({ text: " · " });
+    }
+    row.createSpan({ text: details.filter(Boolean).join(" · ") });
   }
 
   onChooseSuggestion(c: Candidate): void {
-    this.onChoose(c.item);
+    this.onChoose(c.item, c.home);
   }
 }
 

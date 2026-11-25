@@ -9,6 +9,10 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ### Added
 - Tasks queries can filter and group by a task's Todoist labels and project, which aren't on its line: `filter by function inlineTasks.hasLabel(task, "PhoneCall")`, `inlineTasks.inProject(task, "Work")`, and `group by function inlineTasks.labels(task)` or `inlineTasks.project(task)`.
+- **Import task from Todoist** also lists tasks already in a note, with a house and the note's name. Choosing one inserts a copy of its line, so both lines are the same task.
+
+### Fixed
+- **Import task from Todoist** couldn't find a task searched with its words in another order, or by its labels. Words now match in any order across the title, project and labels, which the picker also shows. With more than 100 tasks, it says that typing reaches those past the first 100.
 
 ## [0.4.1] - 2026-11-09
 
