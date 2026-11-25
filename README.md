@@ -10,7 +10,7 @@ renders as
 
 > ☐ Call Bob about the contract `■ #Work  Nov 10  P1`
 
-**Status:** pre-release (0.4.1). Tested against the live Todoist API on Obsidian desktop (Windows) and Android, with Obsidian Sync between them. Not yet tested on iOS. See [CHANGELOG.md](CHANGELOG.md).
+**Status:** pre-release (0.5.0). Tested against the live Todoist API on Obsidian desktop (Windows) and Android, with Obsidian Sync between them. Not yet tested on iOS. See [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
@@ -211,6 +211,29 @@ Lines are written so the [Tasks plugin](https://github.com/obsidian-tasks-group/
 - **Query results, reading view and the edit dialog:** ticking a task in a Tasks query, in reading view, or editing it in Tasks' edit dialog syncs like an edit on its line. Tasks' query results and its reading view show each task's chip after its text. A query result gets no chip if it can't be told apart from another Todoist task with the same text, status and note.
 - **Lines from earlier versions** had the marker last, which hides their fields from Tasks. Each device moves it in front of the fields once, the first time it starts this version, and any line it missed moves the next time its note syncs.
 
+#### Todoist labels and projects in Tasks queries
+
+A task's Todoist labels and project aren't on its line, so Tasks can't see them by itself. The plugin gives Tasks queries functions for them, to use with `filter by function`, `group by function` and `sort by function`:
+
+````markdown
+```tasks
+not done
+filter by function inlineTasks.hasLabel(task, "PhoneCall")
+group by function inlineTasks.project(task)
+```
+````
+
+| Function | Gives |
+|---|---|
+| `inlineTasks.hasLabel(task, "PhoneCall")` | Whether the task has the label. Name several to match any of them: `hasLabel(task, "PhoneCall", "Errand")`. With no name, whether it has any label. Case and a leading `@` don't matter. |
+| `inlineTasks.labels(task)` | Its labels, as Todoist spells them. `group by function inlineTasks.labels(task)` lists a task under each of its labels. |
+| `inlineTasks.inProject(task, "Work")` | Whether it's in the project or a project under it. Name a project by its path, `"Work/Clients"`, as in a `#[…]` reference; a name alone matches a project of that name anywhere. Name several to match any of them. |
+| `inlineTasks.project(task)` | Its project with its parents, `Work/Clients/Acme`. |
+
+- **Only linked tasks:** they work on lines with a marker. A line not yet synced has no labels or project, and a Todoist task that isn't in a note isn't in Tasks' results at all.
+- **As of the last pull:** a label changed in Todoist shows here after this device's next pull, every few minutes by default, or straight away with **Sync now**.
+- **JavaScript in queries** must be turned on in Tasks' settings, as for `isCopy` (see [The same task in several notes](#the-same-task-in-several-notes)). Combine them with any other Tasks instruction, such as `filter by function inlineTasks.hasLabel(task, "PhoneCall") && !inlineTasks.isCopy(task)`.
+
 #### Repeating tasks
 
 A repeating task is one task in Todoist, whichever side it repeats from:
@@ -282,7 +305,8 @@ A new checkbox nested under another checkbox is created as its subtask in Todois
 
 Run **Import task from Todoist** in a note to pick any open Todoist task and insert it at the cursor. Its open subtasks can come with it, indented beneath it in Todoist's order.
 
-- **Finding it:** type to search the task's title, project and due date. With nothing typed, tasks are listed by due date, soonest first. Each shows its project, due date and number of subtasks. Tasks already linked to a line in your vault aren't offered.
+- **Finding it:** type words from the task's title, project or labels, in any order: `belinda leave` finds "December leave handover" labelled `@person:Belinda Thompson`. Tasks with every word in their title come first, then those matched by project or label, each by date. If no task has every word, the search falls back to letters in order, for typos and abbreviations. With nothing typed, the first 100 tasks by date are listed, soonest first; type to reach the rest. Each shows its project, labels, date and number of subtasks.
+- **Already in a note:** a task linked to a line in this vault shows a house and the note it's in. Choosing it inserts a copy of that line, marker and all, so both lines are the same task (see [The same task in several notes](#the-same-task-in-several-notes)). The copy has the line's text and fields as they stand, without its subtasks or `^block` link, and its note stays its home. A date the home line takes from its note's name is written on the copy as `⏳`.
 - **Where it goes:** on an empty line or an empty list item, the task replaces it. Otherwise it goes on the next line, indented like the current list item.
 - **Linked straight away:** the lines carry the tasks' markers, so they sync like any other: the chip shows each task's project, labels and priority, and edits on either side sync both ways. Nothing is created or changed in Todoist by the import.
 - **Subtasks:** the **Import subtasks** setting decides whether they come too. Set to **Ask each time** (the default), importing a task that has open subtasks asks whether to bring them: **With subtasks** or **Task only**. Press Esc to cancel the import. **Always import** and **Never import** skip the question. A subtask already linked to a line elsewhere is left out, along with its own subtasks. A subtask you leave behind can be imported on its own later.
@@ -415,7 +439,7 @@ Then follow steps 3–4 above. After copying a new build over an installed one, 
 - **Order:** only subtasks are kept in order. The order of top-level tasks in a note isn't synced, since one note can hold tasks from several projects. The first time a task's subtasks are seen after updating, their order is just recorded: if the note and Todoist disagree then, they're left until one side is reordered. Lines synced before this version are taken as they're nested the first time each note syncs.
 - **Tasks plugin:** dates other than `⏳` and `📅` stay in the note. Priorities sync only with **Write Tasks plugin fields** on, and 🔽 and ⏬ both count as p4.
 - **Copies of a task:** only the home line decides its nesting and subtask order (see [The same task in several notes](#the-same-task-in-several-notes)). Completing a `🏁 delete` task in a copy, which deletes that line, doesn't complete it while other lines remain; tick it instead. A copy pasted from an old version of the line counts as an edit, so its older values are sent to Todoist.
-- **No Todoist query blocks:** to list tasks in a note, use a Tasks plugin query. Its results show each task's chip (see [Using it with the Tasks plugin](#using-it-with-the-tasks-plugin)).
+- **No Todoist query blocks:** to list tasks in a note, use a Tasks plugin query. Its results show each task's chip, and it can filter by Todoist label and project (see [Todoist labels and projects in Tasks queries](#todoist-labels-and-projects-in-tasks-queries)). Only tasks linked in your notes are listed.
 
 ## Development
 

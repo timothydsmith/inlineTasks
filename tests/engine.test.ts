@@ -2,7 +2,7 @@ import { generateKeyBetween } from "fractional-indexing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GONE_GRACE_MS, SyncEngine, type EngineSettings, type VaultAdapter } from "../src/sync/engine";
 import { blockEnd, setTasksDates, setTasksGlobalFilter, setTasksStatuses, withProjectRef, withRef } from "../src/parse/taskLine";
-import { importLines, taskLine, withMissingSubtasks } from "../src/sync/importTask";
+import { copyLine, importLines, taskLine, withMissingSubtasks } from "../src/sync/importTask";
 import { isoDate } from "../src/sync/dates";
 import { fileDate } from "../src/sync/fileDate";
 import { emptyState, subtaskCount, type SyncState } from "../src/sync/state";
@@ -1371,6 +1371,21 @@ describe("SyncEngine", () => {
       vault.files.set("Daily.md", copy);
       await engine.pushFile("Daily.md");
     };
+
+    it("links a copy inserted from the import picker without changing Todoist", async () => {
+      settings.tasksFields = true;
+      vault.files.set("Home.md", "- [ ] Plant bulbs ⏫ ⏳ 2026-11-14 ^bulbs");
+      await engine.pushFile("Home.md");
+      await engine.pull();
+      const calls = todoist.calls.length;
+      vault.files.set("Daily.md", `- [ ] Coffee\n${copyLine(vault.files.get("Home.md")!, "")}`);
+      await engine.pushFile("Daily.md");
+      await engine.pull();
+      expect(vault.files.get("Daily.md")).toBe("- [ ] Coffee %%td:T2%%\n- [ ] Plant bulbs %%td:T1%% ⏫ ⏳ 2026-11-14");
+      expect(state.tasks.T1).toMatchObject({ path: "Home.md", copies: ["Daily.md"] });
+      expect(todoist.calls.slice(calls).flat().filter((c) => c.args.id === "T1")).toEqual([]);
+      expect(vault.files.get("Home.md")).toBe("- [ ] Plant bulbs %%td:T1%% ⏫ ⏳ 2026-11-14 ^bulbs");
+    });
 
     it("syncs a copy in another note both ways, keeping the note it came from as home", async () => {
       await withCopy();

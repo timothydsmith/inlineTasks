@@ -53,6 +53,8 @@
 .inline-tasks-export-note { color: var(--text-muted); font-size: var(--font-smallest); }
 .inline-tasks-suggest-path { color: var(--text-muted); font-size: var(--font-smallest); }
 .inline-tasks-suggest-create { color: var(--text-accent); }
+.inline-tasks-suggest-home { display: inline-flex; align-items: center; color: var(--text-accent); }
+.inline-tasks-suggest-home svg { width: 1em; height: 1em; }
 .inline-tasks-label-choice { display: flex; align-items: center; gap: 0.5em; }
 .inline-tasks-label-choice input[type="checkbox"] { pointer-events: none; margin: 0; }
 .inline-tasks-label-count { display: inline-flex; align-items: center; gap: 0.15em; }

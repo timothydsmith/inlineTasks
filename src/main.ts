@@ -6,7 +6,7 @@ import { buildExport, exportFileName, fetchHistory, fetchSnapshot, linkedLines, 
 import { ExportModal } from "./ui/exportModal";
 import { labelKey, SyncEngine, type VaultAdapter } from "./sync/engine";
 import { blockEnd, findLineByMarker, parseTaskLine, setTasksDates, setTasksGlobalFilter, setTasksStatuses, withPickedLabels, withRef, type TasksStatus } from "./parse/taskLine";
-import { importLines, withMissingSubtasks } from "./sync/importTask";
+import { copyLine, importLines, taskLine, withMissingSubtasks } from "./sync/importTask";
 import { fileDate, type FileDateSettings } from "./sync/fileDate";
 import { OriginTracker } from "./sync/origin";
 import { projectRef } from "./sync/projects";
@@ -24,7 +24,7 @@ import { LabelModal, type LabelPick } from "./ui/labelModal";
 import { labelTrigger } from "./ui/labelTrigger";
 import { ProjectSuggest } from "./ui/projectSuggest";
 import { QueryChips, type TasksCacheTask } from "./ui/queryChips";
-import { copyChecker, type TasksQueryTask } from "./ui/queryFilter";
+import { copyChecker, todoistFunctions, type TasksQueryTask } from "./ui/queryFilter";
 import { clickableChip, readingChipProcessor } from "./ui/readingChip";
 
 /** The Tasks plugin's id, for reading its statuses. */
@@ -126,7 +126,8 @@ export default class InlineTasksPlugin extends Plugin {
     this.registerMarkdownPostProcessor(readingChipProcessor(() => this.state, chipActions));
     // For Tasks queries: `filter by function !inlineTasks.isCopy(task)` lists each task once, at its home.
     const isCopy = copyChecker(() => this.state, () => this.tasksPlugin<{ getTasks?: () => TasksQueryTask[] }>()?.getTasks?.() ?? null);
-    (window as unknown as { inlineTasks?: unknown }).inlineTasks = { isCopy };
+    // And the task's Todoist labels and project, which aren't on the line: `inlineTasks.hasLabel(task, "PhoneCall")`.
+    (window as unknown as { inlineTasks?: unknown }).inlineTasks = { isCopy, ...todoistFunctions(() => this.state) };
     this.register(() => delete (window as unknown as { inlineTasks?: unknown }).inlineTasks);
     this.app.workspace.onLayoutReady(() => {
       this.queryChips = new QueryChips(
@@ -439,7 +440,12 @@ export default class InlineTasksPlugin extends Plugin {
     const items = await this.guard(() => this.engine.openTasks(), true);
     if (!items) return;
     const isLinked = (id: string) => this.engine.isLinked(id);
-    new ImportModal(this.app, this.state, items, isLinked, (root) => {
+    const homeOf = (id: string) => (isLinked(id) ? this.state.tasks[id].path : null);
+    new ImportModal(this.app, this.state, items, homeOf, (root, home) => {
+      if (home) {
+        void this.guard(() => this.insertCopy(editor, root, home), true);
+        return;
+      }
       const subtasks = importLines(root, items, isLinked, "", "").items.length - 1;
       const mode = this.settings.importSubtasks;
       const insert = (withSubtasks: boolean) => void this.guard(() => this.insertImport(editor, path, root, items, withSubtasks), true);
@@ -450,15 +456,46 @@ export default class InlineTasksPlugin extends Plugin {
 
   /** Insert an imported task (and its subtasks) at the cursor: see the README's Importing a task. */
   private async insertImport(editor: Editor, path: string, root: TodoistItem, open: TodoistItem[], withSubtasks: boolean): Promise<void> {
-    const cursor = editor.getCursor();
-    const current = editor.getLine(cursor.line);
-    const list = /^(\s*)(?:[-*+]|\d+[.)])(?:\s+\[.\])?\s*(.*)$/.exec(current);
-    // An empty line (or empty list item) is replaced; otherwise the task goes on the next line.
-    const replace = current.trim() === "" || (!!list && list[2] === "");
-    const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
+    const { indent } = this.insertPoint(editor);
     const { lines, items } = importLines(root, open, (id) => this.engine.isLinked(id), indent, this.indentUnit(), withSubtasks, this.settings.tasksFields);
     // Linked before the lines are written, so a sync that runs first sees them as synced, not new.
     await this.engine.registerImport(path, items.map((item, i) => ({ item, line: lines[i] })));
+    this.insertLines(editor, lines);
+  }
+
+  /**
+   * Insert a copy of a task already linked in a note, from the import picker: its home line as it
+   * stands (see copyLine), or, if that can't be found, the task as Todoist has it. Not registered:
+   * a line with a known marker in another place is a copy, which the next sync of this note links.
+   */
+  private async insertCopy(editor: Editor, item: TodoistItem, home: string): Promise<void> {
+    const { indent } = this.insertPoint(editor);
+    const file = this.app.vault.getAbstractFileByPath(home);
+    let line: string | null = null;
+    if (file instanceof TFile) {
+      const lines = (this.editorFor(home)?.getValue() ?? (await this.app.vault.read(file))).split("\n");
+      const at = findLineByMarker(lines, item.id);
+      if (at >= 0) line = copyLine(lines[at], indent, this.fileDate(home));
+    }
+    this.insertLines(editor, [line ?? taskLine(item, indent, this.settings.tasksFields)]);
+  }
+
+  /**
+   * Where inserted lines go: an empty line (or empty list item) is replaced; otherwise they go on
+   * the next line, indented like the current list item.
+   */
+  private insertPoint(editor: Editor): { indent: string; replace: boolean } {
+    const current = editor.getLine(editor.getCursor().line);
+    const list = /^(\s*)(?:[-*+]|\d+[.)])(?:\s+\[.\])?\s*(.*)$/.exec(current);
+    const replace = current.trim() === "" || (!!list && list[2] === "");
+    const indent = list ? list[1] : replace ? (/^\s*/.exec(current)?.[0] ?? "") : "";
+    return { indent, replace };
+  }
+
+  private insertLines(editor: Editor, lines: string[]): void {
+    const cursor = editor.getCursor();
+    const current = editor.getLine(cursor.line);
+    const { replace } = this.insertPoint(editor);
     const text = lines.join("\n");
     if (replace) {
       editor.replaceRange(text, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: current.length });

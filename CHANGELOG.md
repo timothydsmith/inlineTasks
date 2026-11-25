@@ -7,6 +7,15 @@ Add new entries under **Unreleased** as you work on `dev`, grouped as Added, Cha
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-26
+
+### Added
+- Tasks queries can filter and group by a task's Todoist labels and project, which aren't on its line: `filter by function inlineTasks.hasLabel(task, "PhoneCall")`, `inlineTasks.inProject(task, "Work")`, and `group by function inlineTasks.labels(task)` or `inlineTasks.project(task)`.
+- **Import task from Todoist** also lists tasks already in a note, with a house and the note's name. Choosing one inserts a copy of its line, so both lines are the same task.
+
+### Fixed
+- **Import task from Todoist** couldn't find a task searched with its words in another order, or by its labels. Words now match in any order across the title, project and labels, which the picker also shows. With more than 100 tasks, it says that typing reaches those past the first 100.
+
 ## [0.4.1] - 2026-11-09
 
 ### Fixed
@@ -110,7 +119,8 @@ First release. Needs Obsidian 1.8.7 or later.
 - Commands: **Sync now**, **Sync current note**, **Review backfill of existing checkboxes**, **Save sync log to a note**.
 - Works on mobile as well as desktop: uses only Obsidian's `requestUrl`, with no Node APIs. Tested on Android; not yet on iOS.
 
-[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.4.1...dev
+[Unreleased]: https://github.com/timothydsmith/inlineTasks/compare/0.5.0...dev
+[0.5.0]: https://github.com/timothydsmith/inlineTasks/compare/0.4.1...0.5.0
 [0.4.1]: https://github.com/timothydsmith/inlineTasks/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/timothydsmith/inlineTasks/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/timothydsmith/inlineTasks/compare/0.2.0...0.3.0
